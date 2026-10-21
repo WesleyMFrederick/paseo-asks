@@ -65,7 +65,11 @@ Pill: one exported `pillLabel(asks, agentId)` in `shared/asks.ts`, using the sam
     - `popover-top/middle/bottom.png`: the whole popover, scrolled within its 520px box;
     - `toast.png`: the banner "Dropped A1. Its agent has been told." on screen after Drop;
     - `toast.txt`: the toast text, `computed visibility: visible`, and the rect inside the 900px viewport.
-- **Not verified on the live Paseo surface** — that needs the merge and plugin reload.
+- **Live, after Wesley's OK** (2026-10-21 17:42Z): local main was fast-forwarded to `69b8341`, and `paseo plugin reload paseo-asks` brought it back as `running`. I created test ask A2 in `wks_97ff0e9b0cf068b3` and dropped it twice via the plugin's `/act` (the same `service.act` the UI calls).
+  - Drop #1 returned `{"status":"dropped","delivery":"queued"}`; the owner was mid-turn.
+  - Drop #2 was refused.
+  - `act-log.jsonl` got two lines: `"before":"open","after":"dropped","delivery":"queued"`, then `"before":"dropped","error":"A2 is already dropped; nothing was changed or sent"`.
+  - Paseo's own toast on screen is not yet seen. That needs Wesley's next drop in the app.
 
 ## Side finding: "Timed out waiting for OMP to become ready"
 
