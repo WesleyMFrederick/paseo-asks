@@ -1,0 +1,17 @@
+{
+ "entries": [
+  {
+   "seq": 4,
+   "ts": 1792603918748.668,
+   "type": "console",
+   "level": "log",
+   "text": "Dropped A1. Its agent has been told.",
+   "location": "http://localhost:5199/mocks/react-native.tsx:19:29",
+   "args": [
+    "Dropped A1. Its agent has been told."
+   ]
+  }
+ ],
+ "nextSeq": 4,
+ "dropped": 0
+}

@@ -66,8 +66,12 @@ No cause beyond load found. At 10:26 local the load was 7.10 / 35.40 / 41.95 wit
 
 No worker agents, no Jev calls. Only this session's tokens.
 
-## Open risks
-
+- Popover rendered with react-native-web in `preview/` (the plugin's own screenshot harness): full title, body, code block, list, links, option buttons, note box, Reply/Done/Drop/Discuss all visible without a tap.
+- Independent browser-agent check on that preview, starting from a fresh page with nothing clicked:
+  - Run 1 **FAILED** on two points. After Drop, the toast said "Sent A1…": the word came from the returned status, which a stale or mocked answer can leave unchanged. Also, A3's long code line was cut off at the right edge, because code blocks scrolled sideways.
+  - Fix (`client/AsksView.tsx`, `client/Markdown.tsx`): the toast word now comes from the button pressed, and code blocks wrap.
+  - Run 2 **PASSED**: A3, A1, A4 and A2 are all in full with no text clipped (no element wider than its box). Drop on A1 logged exactly "Dropped A1. Its agent has been told." Evidence: `design-docs/features/20261021T172000-asks-drop-notice-and-full-view/research/ui-check/` (run 1) and `…/recheck/` (run 2).
+- **Not verified on the live Paseo surface**: that needs the merge and plugin reload.
 - The popover's `maxHeight: 520` now scrolls through fully open asks; with many long asks Wesley scrolls more. Chosen over hiding content.
 - Sidebar count still counts `open` only (asks waiting on Wesley); in-progress ones wait on the agent. Left as is.
 - Same-id confusion across workspaces is explained in the README but ids are still per workspace; renaming them would break agents' existing references.

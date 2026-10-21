@@ -1,6 +1,5 @@
 import type { PluginTheme } from "@getpaseo/plugin";
 import { openExternalUrl } from "@getpaseo/plugin/client";
-import { ScrollView } from "@getpaseo/plugin/client/react-native";
 import { Fragment, useMemo, type ReactNode } from "react";
 import { Platform, Text, View } from "react-native";
 import { parseMarkdown, type Inline } from "../shared/markdown";
@@ -52,12 +51,13 @@ export function Markdown({ source, theme }: { source: string; theme: PluginTheme
               </View>
             );
           case "code":
+            // Wrapped, not scrolled sideways: in a narrow popover a long line would be cut off.
             return (
-              <ScrollView key={index} horizontal style={styles.codeBlock} contentContainerStyle={styles.codeContent}>
+              <View key={index} style={[styles.codeBlock, styles.codeContent]}>
                 <Text style={styles.codeBlockText} selectable>
                   {block.text}
                 </Text>
-              </ScrollView>
+              </View>
             );
         }
       })}

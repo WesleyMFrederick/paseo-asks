@@ -169,9 +169,9 @@ function AskDetail({
   const mutation = useMutation({
     mutationFn: (input: { verb: "action" | "done" | "drop" | "reply"; actionId?: string }) =>
       act({ workspaceId: ask.workspaceId, id: ask.id, note, ...input }),
-    onSuccess: ({ ask: next, delivery }) => {
+    onSuccess: ({ delivery }, { verb }) => {
       setNote("");
-      const what = next.status === "dropped" ? "Dropped" : next.status === "done" ? "Closed" : "Sent";
+      const what = verb === "drop" ? "Dropped" : verb === "done" ? "Closed" : "Sent";
       if (delivery === "sent") toast.show(`${what} ${ask.id}. Its agent has been told.`);
       if (delivery === "queued") toast.show(`${what} ${ask.id}. Its agent is mid-turn and will be told when the turn ends.`);
       if (delivery === "nobody") toast.show(`${what} ${ask.id}; its agent is gone, so nobody was told.`, { variant: "warning" });
