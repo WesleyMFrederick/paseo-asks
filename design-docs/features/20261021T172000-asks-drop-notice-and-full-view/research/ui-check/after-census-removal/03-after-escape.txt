@@ -1,0 +1,79 @@
+Asks · shop-api
+NEEDS YOU
+A3
+Keep carts in Redis or Postgres?
+2h
+A1
+PR #29 Stripe webhook retries is ready
+checks ✓
+3h
+A4
+File an issue for the flaky tax-rate test?
+3h
+IN PROGRESS
+A2
+PR #30 drop the legacy coupon code: merging
+checks …
+4m
+Asks
+acme/shop-api · checkout rework
+NEEDS YOU
+A3
+Keep carts in Redis or Postgres?
+2h
+A1
+PR #29 Stripe webhook retries is ready
+checks ✓
+3h
+A4
+File an issue for the flaky tax-rate test?
+3h
+IN PROGRESS
+A2
+PR #30 drop the legacy coupon code: merging
+checks …
+4m
+acme/infra · staging cluster
+NEEDS YOU
+A7
+Click Allow on the cloud login tab I opened
+6m
+A6
+Which region for the new staging node: eu-west or eu-central?
+40m
+NEEDS YOU
+A3
+Keep carts in Redis or Postgres?
+2h
+A1
+PR #29 Stripe webhook retries is ready
+checks ✓
+3h
+A4
+File an issue for the flaky tax-rate test?
+3h
+IN PROGRESS
+A2
+PR #30 drop the legacy coupon code: merging
+checks …
+4m
+Refresh asks
+Open wide
+Asks (phone pill sheet)
+NEEDS YOU
+A3
+Keep carts in Redis or Postgres?
+2h
+A1
+PR #29 Stripe webhook retries is ready
+checks ✓
+3h
+A4
+File an issue for the flaky tax-rate test?
+3h
+IN PROGRESS
+A2
+PR #30 drop the legacy coupon code: merging
+checks …
+4m
+Refresh asks
