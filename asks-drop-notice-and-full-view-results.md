@@ -88,6 +88,7 @@ No worker agents and no Jev calls. This session cost about $3.25 through the fir
 - The pill popover itself still cannot be wider than 420: that is a Paseo host limit. Open wide hands off to the Asks panel, which shows the whole workspace, not only that agent's asks.
 - Sidebar count still counts `open` only (asks waiting on Wesley); in-progress ones wait on the agent. Left as is.
 - Same-id confusion across workspaces is explained in the README but ids are still per workspace; renaming them would break agents' existing references.
+- Wesley's real-app checks (2026-10-21): wide display, Open wide gives the asks enough room ("Looks right"); phone sheet fit was also signed off. Both checks are closed.
 
 ## Duplicate popover: cause found (2026-10-21)
 
