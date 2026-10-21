@@ -4,7 +4,7 @@
 // Opens the visible Asks pill once, counts popover surfaces and which React owner each belongs to, then closes it.
 import type { ComponentType } from "react";
 
-const DONE_KEY = "asks.popover-census.v1";
+const DONE_KEY = "asks.popover-census.v2";
 const PILL_TEXT = /^(Asks · |No asks)/;
 const OWNER_PROPS = ["agentId", "workspaceId", "serverId", "active", "isRouteFocused", "visible", "testID", "compact", "recoveryRequested"];
 
@@ -88,15 +88,51 @@ function popoverInstances(surface: Element, Popover: ComponentType<never>): stri
   return [...found];
 }
 
-function pressViaProps(trigger: Element): string {
+/** The press handler names on the trigger's fiber chain, so a miss says what the host actually wired. */
+function handlerNames(trigger: Element): { hasFiber: boolean; reactKeys: string[]; handlers: string[] } {
+  const handlers = new Set<string>();
+  for (let fiber = fiberOf(trigger), depth = 0; fiber && depth < 30; fiber = fiber.return, depth++) {
+    for (const key of Object.keys(fiber.memoizedProps ?? {})) if (/^on[A-Z]/.test(key)) handlers.add(`${depth}:${key}`);
+  }
+  return { hasFiber: fiberOf(trigger) !== null, reactKeys: Object.keys(trigger).filter((key) => key.startsWith("__react")), handlers: [...handlers] };
+}
+
+function pressViaProps(trigger: Element): boolean {
   for (let fiber = fiberOf(trigger); fiber; fiber = fiber.return) {
     const onPress = fiber.memoizedProps?.onPress;
     if (typeof onPress === "function") {
       (onPress as () => void)();
-      return "onPress";
+      return true;
     }
   }
-  throw new Error("CensusError: no onPress above the Asks pill");
+  return false;
+}
+
+/** Every rendered copy of the popover's "Refresh asks" text: the symptom itself, independent of host selectors. */
+function popoverCopies(Popover: ComponentType<never>) {
+  const copies = [];
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    const holder = node.parentElement;
+    if (!holder || node.textContent?.trim() !== "Refresh asks") continue;
+    const surface = holder.closest("[data-menu-surface='true']");
+    copies.push({ ...describe(holder), inMenuSurface: surface !== null, popovers: popoverInstances(holder, Popover), portalRootChild: topLevelChild(holder) });
+  }
+  return copies;
+}
+
+/** Which direct child of <body> holds the node, e.g. the app root or the menu overlay portal. */
+function topLevelChild(node: Element): string {
+  let el: Element = node;
+  while (el.parentElement && el.parentElement !== document.body) el = el.parentElement;
+  return `${el.tagName}#${el.id} ${el.getAttribute("data-testid") ?? ""} index=${[...document.body.children].indexOf(el)}`.trim();
+}
+
+function snapshot(Popover: ComponentType<never>) {
+  return {
+    surfaces: surfaces().map((surface) => ({ ...describe(surface), popovers: popoverInstances(surface, Popover), text: surface.textContent?.slice(0, 80) })),
+    copies: popoverCopies(Popover),
+  };
 }
 
 function closeMenu(): void {
@@ -123,33 +159,44 @@ export async function runPopoverCensus(
     }
     if (signal.aborted) return;
     if (!visible) throw new Error("CensusError: no visible Asks pill within 10 minutes");
-    const before = { triggers: triggers().map(describe), surfaces: surfaces().length };
-    // A DOM click is the user's path; the props call covers a Pressable that ignores synthetic clicks.
+    const before = { triggers: triggers().map((el) => ({ ...describe(el), ...handlerNames(el), tag: el.tagName, role: el.getAttribute("role") })), ...snapshot(Popover) };
+    // Static views (the asks panel) also show "Refresh asks", so a press counts only when it adds copies or surfaces.
+    const baseline = before.surfaces.length + before.copies.length;
+    const opened = () => surfaces().length + popoverCopies(Popover).length > baseline;
+    // Try each press path in turn and record what each one produced; never stop at the first miss.
+    const attempts: Record<string, unknown>[] = [];
     (visible as HTMLElement).click();
-    let method = "click";
+    await sleep(2_000); // past the entering animation and its 750 ms cleanup
+    attempts.push({ method: "click", opened: opened(), ...snapshot(Popover) });
+    if (!opened()) {
+      for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup", "click"]) {
+        visible.dispatchEvent(new (type.startsWith("pointer") ? PointerEvent : MouseEvent)(type, { bubbles: true, cancelable: true, button: 0 }));
+      }
+      await sleep(2_000);
+      attempts.push({ method: "pointer-sequence", opened: opened(), ...snapshot(Popover) });
+    }
+    if (!opened()) {
+      const called = pressViaProps(visible);
+      await sleep(2_000);
+      attempts.push({ method: called ? "onPress" : "onPress-missing", opened: opened(), ...snapshot(Popover) });
+    }
+    closeMenu();
     await sleep(800);
-    if (surfaces().length === 0) {
-      method = pressViaProps(visible);
+    if (surfaces().length > before.surfaces.length) {
+      pressViaProps(visible);
       await sleep(800);
     }
-    await sleep(1_200); // past the entering animation and its 750 ms cleanup
-    const open = surfaces().map((surface) => ({ ...describe(surface), popovers: popoverInstances(surface, Popover), text: surface.textContent?.slice(0, 80) }));
-    closeMenu();
-    await sleep(600);
-    if (surfaces().length > 0) pressViaProps(visible);
-    await sleep(600);
     census = {
-      ok: true,
-      method,
+      ok: attempts.some((attempt) => attempt.opened === true),
       userAgent: navigator.userAgent,
       href: location.href,
+      bodyChildren: [...document.body.children].map((el) => `${el.tagName}#${el.id}`),
       before,
-      pressed: describe(visible),
-      open,
-      afterClose: surfaces().length,
+      attempts,
+      afterClose: snapshot(Popover),
     };
   } catch (error) {
-    census = { ok: false, error: error instanceof Error ? error.message : String(error), href: typeof location === "undefined" ? null : location.href };
+    census = { ok: false, error: error instanceof Error ? `${error.message}\n${error.stack ?? ""}` : String(error), href: typeof location === "undefined" ? null : location.href };
   }
   localStorage.setItem(DONE_KEY, new Date().toISOString());
   await report(census);
