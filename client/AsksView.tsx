@@ -87,7 +87,6 @@ export function AgentAsks(props: { theme: PluginTheme; compact: boolean; workspa
   const { theme, compact, workspaceId, agentId } = props;
   const styles = useMemo(() => makeStyles(theme, compact), [theme, compact]);
   const asks = useAsks(workspaceId);
-  const [expanded, setExpanded] = useState<string | null>(null);
   const refresh = useRpc(refreshAsks);
   const toast = useToast();
   const mutation = useMutation({
@@ -103,14 +102,7 @@ export function AgentAsks(props: { theme: PluginTheme; compact: boolean; workspa
     <ScrollView style={styles.popover} contentContainerStyle={styles.popoverContent}>
       {mine.length === 0 && <Text style={styles.muted}>This agent has no open asks.</Text>}
       {mine.map((ask) => (
-        <AskRow
-          key={ask.id}
-          ask={ask}
-          styles={styles}
-          theme={theme}
-          expanded={expanded === ask.id}
-          onToggle={() => setExpanded(expanded === ask.id ? null : ask.id)}
-        />
+        <AskRow key={ask.id} ask={ask} styles={styles} theme={theme} />
       ))}
       <View style={styles.buttons}>
         <Button
@@ -128,17 +120,21 @@ function AskRow(props: {
   ask: Ask;
   styles: Styles;
   theme: PluginTheme;
-  expanded: boolean;
-  onToggle(): void;
+  expanded?: boolean;
+  /** Absent: the row is always fully open. */
+  onToggle?(): void;
   openAgent?: (agentId: string) => void;
 }) {
-  const { ask, styles, theme, expanded } = props;
+  const { ask, styles, theme } = props;
+  // Always open in the popover: the full ask, body and buttons, with nothing to discover.
+  const expanded = props.expanded || !props.onToggle;
   return (
-    <View style={[styles.card, expanded && styles.cardExpanded]}>
+    <View style={[styles.card, props.expanded && styles.cardExpanded]}>
       <Pressable
-        accessibilityRole="button"
+        accessibilityRole={props.onToggle ? "button" : "text"}
         accessibilityLabel={`${ask.id}: ${ask.title}`}
         onPress={props.onToggle}
+        disabled={!props.onToggle}
         style={styles.row}
       >
         <Icon name={KIND_ICONS[ask.kind]} size={16} color={theme.colors.foregroundMuted} />
@@ -173,12 +169,18 @@ function AskDetail({
   const mutation = useMutation({
     mutationFn: (input: { verb: "action" | "done" | "drop" | "reply"; actionId?: string }) =>
       act({ workspaceId: ask.workspaceId, id: ask.id, note, ...input }),
-    onSuccess: ({ notified }) => {
+    onSuccess: ({ ask: next, delivery }) => {
       setNote("");
-      if (!notified) toast.show(`${ask.id} closed; its agent is gone, so nobody was told.`, { variant: "warning" });
+      const what = next.status === "dropped" ? "Dropped" : next.status === "done" ? "Closed" : "Sent";
+      if (delivery === "sent") toast.show(`${what} ${ask.id}. Its agent has been told.`);
+      if (delivery === "queued") toast.show(`${what} ${ask.id}. Its agent is mid-turn and will be told when the turn ends.`);
+      if (delivery === "nobody") toast.show(`${what} ${ask.id}; its agent is gone, so nobody was told.`, { variant: "warning" });
       void queryClient.invalidateQueries({ queryKey: ["asks"] });
     },
-    onError: (error) => toast.error(error instanceof Error ? error.message : String(error)),
+    onError: (error) => {
+      toast.error(error instanceof Error ? error.message : String(error));
+      void queryClient.invalidateQueries({ queryKey: ["asks"] });
+    },
   });
   const startDiscussion = useRpc(discussAsk);
   const discussion = useMutation({
@@ -193,6 +195,8 @@ function AskDetail({
     if (action.kind === "open" && action.url) return openLink(action.url);
     mutation.mutate({ verb: "action", actionId: action.id });
   };
+  // In progress, a send already went out; its options to close or open stay available.
+  const actions = ask.actions.filter((action) => ask.status === "open" || action.kind !== "send");
 
   return (
     <View style={styles.detail}>
@@ -206,9 +210,9 @@ function AskDetail({
       {ask.orphaned && (
         <Text style={styles.orphaned}>The agent that raised this is archived. Closing it here notifies nobody.</Text>
       )}
-      {ask.status === "open" && ask.actions.length > 0 && (
+      {actions.length > 0 && (
         <View style={styles.buttons}>
-          {ask.actions.map((action) => (
+          {actions.map((action) => (
             <Button
               key={action.id}
               styles={styles}

@@ -9,7 +9,7 @@ import type {
 import { SidebarRow } from "@getpaseo/plugin/client/ui";
 import { Text } from "react-native";
 import { AgentAsks, AsksView, POLL_MS, useAsks } from "./client/AsksView";
-import { listAsks } from "./shared/asks";
+import { listAsks, pillLabel } from "./shared/asks";
 
 function WorkspacePanel({ theme, layout, workspaceId, navigation }: PluginWorkspacePanelProps) {
   return (
@@ -50,11 +50,6 @@ function PillPopover({ theme, layout, workspaceId, ...context }: PluginButtonCon
   return <AgentAsks theme={theme} compact={layout.compact} workspaceId={workspaceId} agentId={context.agentId} />;
 }
 
-/** The pill's face: how many asks wait on you, or "No asks" so a missing one is noticed. */
-function pillLabel(count: number): string {
-  return count > 0 ? `Asks · ${count}` : "No asks";
-}
-
 /** A composer pill per agent with its open asks; pressing it shows them and a Refresh. */
 function contributePills(client: PluginClientContext): () => void {
   const pills = new Map<string, PluginButtonRegistration>();
@@ -69,7 +64,7 @@ function contributePills(client: PluginClientContext): () => void {
         id: "asks",
         workspaceId,
         agentId,
-        button: { title: "Asks", icon: "Inbox", label: pillLabel(0), behavior: { kind: "popover", Content: PillPopover } },
+        button: { title: "Asks", icon: "Inbox", label: pillLabel([], agentId), behavior: { kind: "popover", Content: PillPopover } },
       }),
     );
   };
@@ -80,11 +75,7 @@ function contributePills(client: PluginClientContext): () => void {
 
   const refreshCounts = async () => {
     const { asks } = await client.rpc(listAsks, {});
-    const counts = new Map<string, number>();
-    for (const ask of asks) if (ask.status === "open") counts.set(ask.ownerAgentId, (counts.get(ask.ownerAgentId) ?? 0) + 1);
-    for (const [agentId, pill] of pills) {
-      pill.update({ label: pillLabel(counts.get(agentId) ?? 0) });
-    }
+    for (const [agentId, pill] of pills) pill.update({ label: pillLabel(asks, agentId) });
   };
   const timer = setInterval(() => void refreshCounts().catch(() => undefined), POLL_MS * 2);
 

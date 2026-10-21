@@ -22,7 +22,7 @@ PR asks show live status from `gh`: open, merged or closed, checks, review decis
 
 - an **Asks** panel in each workspace (also in ⌘K: "Open asks for this workspace");
 - an **Asks** screen in the sidebar, covering every workspace, with a count of what's waiting;
-- an **Asks · n** (or **No asks**) pill in every agent's composer. Pressing it lists that agent's asks, with a **Refresh asks** button that tells the agent to bring them up to date: create asks it skipped, and update or resolve stale ones.
+- an **Asks · n** (or **No asks**) pill in every agent's composer. It counts the same asks its popover lists, so in-progress ones show as **Asks · 1 in progress**, never as **No asks**. Pressing it shows each of that agent's asks in full (title, body, links, option buttons, Reply, Done, Drop), with a **Refresh asks** button that tells the agent to bring them up to date: create asks it skipped, and update or resolve stale ones.
 
 ## How it works
 
@@ -37,6 +37,8 @@ agent ──stdio MCP──▶ bridge.mjs ──HTTP 127.0.0.1──▶ plugin s
 - Agents sometimes ask in chat and skip `ask_create`. When a turn ends on a question, uses no asks tool and names no ask id, the plugin sends one `[asks]` reminder. Its answer is never reminded again, and side chats are never reminded.
 - Answers are written to an on-disk outbox first. They're sent only when the agent is between turns, because a prompt sent mid-turn interrupts it, and several answers are batched into one message. A plugin restart loses nothing.
 - If the agent that raised an ask is archived, the ask is marked *orphaned*: you can still close it, and nobody is notified.
+- Every Drop, Done, Reply or option press confirms who heard: the agent was told now, will be told when its current turn ends, or (orphaned) nobody. Acting on an ask that is already done or dropped fails with "A2 is already dropped; nothing was changed or sent", so a second press never re-sends. Each press, applied or refused, is one line in `act-log.jsonl` in the data folder.
+- Ask ids count per workspace: "A2" in one workspace and "A2" in another are different asks with different owners.
 
 ## Install
 
