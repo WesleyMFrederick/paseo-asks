@@ -88,3 +88,20 @@ No worker agents and no Jev calls. This session cost about $3.25 through the fir
 - The pill popover itself still cannot be wider than 420: that is a Paseo host limit. Open wide hands off to the Asks panel, which shows the whole workspace, not only that agent's asks.
 - Sidebar count still counts `open` only (asks waiting on Wesley); in-progress ones wait on the agent. Left as is.
 - Same-id confusion across workspaces is explained in the README but ids are still per workspace; renaming them would break agents' existing references.
+
+## Duplicate popover: cause found (2026-10-21)
+
+Symptom (Wesley): one click on the Asks pill shows the popover at the pill and again at the top-left.
+
+Method: a temporary one-time check inside the plugin (commits 7bb1e30, add881a), merged and reloaded with Wesley's OK. Run 1 failed loudly and saved no detail. Run 2 saved the full census: `design-docs/features/20261021T172000-asks-drop-notice-and-full-view/research/host-popover-width/popover-census-run2.json`.
+
+Findings from run 2:
+- 20 Asks pills were mounted for 10 workspaces, 2 per workspace. Only 1 was on screen (x 342, y 894). The other 19 sit inside hidden containers and measure 0,0,0,0.
+- The current workspace (`wks_82129821112f13d3`) had **two** pills. Both had the same pill entry (key 342, id `asks`), the same agent, and the same deck entry. Both had `active: true` on every panel and deck flag, and `isRouteFocused: true`.
+- The only difference was the route instance: `workspace/[workspaceId]/index-QvyfjJkc…` (visible) vs `workspace/[workspaceId]/index-V_Xqq2gpq…` (hidden). So the navigation stack holds two copies of the same workspace screen, and both believe they are the active one.
+
+Cause (the advisor's H-A, confirmed): the pill's open state is shared per entry, so one click opens both menus. The hidden copy's popover still draws, because its panel says active, and it portals out of the hidden screen. Its trigger measures 0,0, so it lands at the top-left. This matches the Paseo comment that repeated `/new` to workspace hops "append hidden deck entries". H-B (one menu, extra DOM copy) and H-C (stale registrations after reload) are refuted: the two pills belong to two live route instances, not to one menu or an old registration.
+
+Where the bug lives: the Paseo host (route stack plus `MenuSurface` gating on panel active only), not the plugin. Not fixed upstream as of `origin/main` (no changes to the menu, retained-panel or workspace-route files since v0.12.0).
+
+Side note: none of the check's synthetic presses opened the menu. The host's pressable uses the responder system, which ignores synthetic clicks. That does not affect the result, because the census of the mounted pills alone decides the cause.

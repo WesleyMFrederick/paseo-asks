@@ -1,0 +1,19 @@
+Duplicate popover research, getpaseo/paseo origin/main ce67efa9e
+plugins/buttons/model.ts:141 (open state is one global flag per pill)
+    this.replace(key, { open });
+plugins/buttons/view.tsx:309 (every mounted copy of the pill renders its own popover from that flag)
+    <MenuRoot compactMode="sheet" open={entry.open} onOpenChange={setOpen}>
+screens/workspace/workspace-panel-host.tsx:91 (hidden tabs stay mounted)
+/** Mounts panel implementations behind the shared host contract and retains modified tabs. */
+plugins/navigation.ts:34 (openPanel opens a tab in the workspace, no new screen)
+      navigateToWorkspace({
+        serverId,
+--- Installed v0.12.0 source (git show v0.12.0:...) ---
+components/ui/menu/menu-surface.tsx:139 (a menu inside a hidden panel draws nothing)
+  if (!active) return null;
+components/retained-panel.tsx:4 (outside any panel, a menu counts as shown)
+const RetainedPanelActiveContext = createContext(true);
+screens/workspace/sheet-tabs.tsx:200 (whole workspace screens stay loaded out of sight)
+  // Hidden workspaces stay mounted in the deck and under Settings; only the visible one owns Back.
+navigation/workspace-route-navigation.ts:137
+        // Removing it lets repeated /new -> workspace hops append hidden deck entries.
