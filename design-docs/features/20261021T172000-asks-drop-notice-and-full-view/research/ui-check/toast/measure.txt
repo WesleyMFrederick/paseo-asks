@@ -1,0 +1,8 @@
+elements checked: 143
+scrollWidth>clientWidth count: 0
+text-overflow ellipsis count: 0
+line-clamp count: 0
+scroller clientHeight: 520
+scroller scrollHeight: 1238
+scroller maxHeight: 520px
+scrollWidth details: none

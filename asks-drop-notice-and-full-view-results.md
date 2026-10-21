@@ -60,6 +60,11 @@ Pill: one exported `pillLabel(asks, agentId)` in `shared/asks.ts`, using the sam
   - Run 1 **FAILED** on two points. After Drop, the toast said "Sent A1…": the word came from the returned status, which a stale or mocked answer can leave unchanged. Also, A3's long code line was cut off at the right edge, because code blocks scrolled sideways.
   - Fix (`client/AsksView.tsx`, `client/Markdown.tsx`): the toast word now comes from the button pressed, and code blocks wrap.
   - Run 2 **PASSED**: A3, A1, A4 and A2 are all in full with no text clipped (no element wider than its box). Drop on A1 logged exactly "Dropped A1. Its agent has been told." Evidence: `design-docs/features/20261021T172000-asks-drop-notice-and-full-view/research/ui-check/` (run 1) and `…/recheck/` (run 2).
+  - Run 3 (`…/final/`) cited its evidence to single lines, but only in text files. It had no screenshots, and the toast showed up only as a console line.
+  - Run 4 (`…/toast/`) **PASSED** with screenshots. The preview's toast stand-in is now an on-screen banner (`preview/mocks/react-native.tsx`); Paseo's real toast is a host component. It saved:
+    - `popover-top/middle/bottom.png`: the whole popover, scrolled within its 520px box;
+    - `toast.png`: the banner "Dropped A1. Its agent has been told." on screen after Drop;
+    - `toast.txt`: the toast text, `computed visibility: visible`, and the rect inside the 900px viewport.
 - **Not verified on the live Paseo surface** — that needs the merge and plugin reload.
 
 ## Side finding: "Timed out waiting for OMP to become ready"

@@ -1,0 +1,7 @@
+textContent: Dropped A1. Its agent has been told.
+role: status
+rect x,y,width,height: 666.0625,837,267.875,39
+viewport height: 900
+computed display: block
+computed visibility: visible
+computed opacity: 1
