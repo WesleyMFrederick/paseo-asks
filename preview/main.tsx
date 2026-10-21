@@ -30,6 +30,15 @@ function Frame(props: { id: string; title: string; width: number; height: number
   );
 }
 
+/** Paseo's PluginPopoverSurface: a MenuSurface with minWidth 280, maxWidth 420, maxHeight 440, scrollable (Paseo.app web bundle). */
+function HostPopover(props: { children: React.ReactNode }) {
+  return (
+    <View testID="popover" style={{ minWidth: 280, maxWidth: 420, maxHeight: 440, overflow: "scroll" as never, padding: 8, borderRadius: 12, borderWidth: 1, borderColor: theme.colors.border, backgroundColor: theme.colors.surface0 }}>
+      {props.children}
+    </View>
+  );
+}
+
 createRoot(document.getElementById("root")!).render(
   <QueryClientProvider client={new QueryClient()}>
     <Frame id="panel" title="Asks · shop-api" width={620} height={620}>
@@ -38,8 +47,8 @@ createRoot(document.getElementById("root")!).render(
     <Frame id="phone" title="Asks" width={390} height={720}>
       <AsksView theme={theme} compact openAgent={() => {}} />
     </Frame>
-    <Frame id="popover" title="Composer pill popover · main agent" width={440} height={620}>
+    <HostPopover>
       <AgentAsks theme={theme} compact={false} workspaceId="api" agentId="main" />
-    </Frame>
+    </HostPopover>
   </QueryClientProvider>,
 );

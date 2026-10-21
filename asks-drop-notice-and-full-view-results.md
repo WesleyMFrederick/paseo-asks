@@ -7,7 +7,7 @@ Date: 2026-10-21. Branch `fix/drop-notice-and-full-view` (worktree `~/.paseo/plu
 | Row | Measure | Baseline (main `617c145`) | Target | After (branch) |
 |---|---|---|---|---|
 | MoE 1 | Human drops an ask: owner gets one notice, human sees who heard | Notice queued, human sees nothing; a second drop re-sent it (owner got the same line twice) | One notice; toast names sent / queued / nobody | Replay of the real incident: 1 notice; drop #1 returns `queued`; drop #2 refused |
-| MoE 2 | Popover shows the whole ask without a tap | Title cut to 1 line; body, links, options, Reply/Done/Drop hidden until tap | All visible | All visible (see `docs/popover.png`) |
+| MoE 2 | Popover is readable and matches the sidebar | Title cut to 1 line; popover cut off on the right | Same collapsible rows as the sidebar; titles wrap; nothing past the right edge | Run 5: rows start collapsed, titles wrap, every card ends 9px inside the 420px host popover |
 | MoE 3 | Pill count matches popover | Pill counts `open` only; popover lists `open`+`in_progress` → "No asks" next to A3 | Same set | Shared `pillLabel`: "Asks · 1 in progress" |
 | MoP 1 | Acts on a closed ask that change or re-send anything | 1 of 2 human drops on 2026-10-21 (outbox, 17:10:53Z) | 0 | 0 (error "A2 is already dropped; nothing was changed or sent") |
 | MoP 2 | Human acts with a logged outcome | 0 (no log) | 100% | 100%: `act-log.jsonl`, one line per act, applied or refused |
@@ -45,7 +45,8 @@ Pill: one exported `pillLabel(asks, agentId)` in `shared/asks.ts`, using the sam
 - `shared/asks.ts`: `actOnAsk` output `{ ask, delivery }`; `pillLabel`.
 - `index.server.ts`: writes `act-log.jsonl`.
 - `index.client.tsx`: pill uses `pillLabel`.
-- `client/AsksView.tsx`: popover rows always fully open; toast after every act says who heard (warning if nobody); error toast on refusal; in-progress asks keep their close/open actions (send options hidden, already chosen).
+- `client/AsksView.tsx`: one shared `AskSections` list (collapsed rows, tap to open) for the panel, the global screen and the pill popover. Titles wrap instead of truncating. The popover has no width or ScrollView of its own, because the host already sizes it (280–420 wide) and scrolls it (max 440 high). Toast after every act says who heard (warning if nobody); error toast on refusal; in-progress asks keep their close/open actions.
+- Correction after Wesley's review: the first version kept every popover ask fully open (not asked for) and set a fixed 420 width inside the host's 420 cap, so the host padding cut off the right side. See [principles-review.md](design-docs/features/20261021T172000-asks-drop-notice-and-full-view/principles-review.md).
 - README, preview mock, preview popover frame, `docs/popover.png`.
 
 ## Checks run
@@ -70,6 +71,7 @@ Pill: one exported `pillLabel(asks, agentId)` in `shared/asks.ts`, using the sam
   - Drop #2 was refused.
   - `act-log.jsonl` got two lines: `"before":"open","after":"dropped","delivery":"queued"`, then `"before":"dropped","error":"A2 is already dropped; nothing was changed or sent"`.
   - Paseo's own toast on screen is not yet seen. That needs Wesley's next drop in the app.
+- Run 5 (`…/collapsed/`) **PASSED** on the preview, which now mirrors the host popover limits (`HostPopover` in `preview/main.tsx`). Rows start collapsed in both popover and panel. The two-line title wraps. Each card's right edge sits 9px inside the popover, collapsed and expanded. A second tap collapses the row.
 
 ## Side finding: "Timed out waiting for OMP to become ready"
 
@@ -81,6 +83,6 @@ No worker agents and no Jev calls. This session cost about $3.25 through the fir
 
 ## Open risks
 
-- The popover's `maxHeight: 520` now scrolls through fully open asks; with many long asks Wesley scrolls more. Chosen over hiding content.
+- The pill popover cannot be wider than 420: that is a Paseo host limit, and pill content cannot open the wide Asks screen. Wide screens get the full width in the sidebar Asks screen.
 - Sidebar count still counts `open` only (asks waiting on Wesley); in-progress ones wait on the agent. Left as is.
 - Same-id confusion across workspaces is explained in the README but ids are still per workspace; renaming them would break agents' existing references.

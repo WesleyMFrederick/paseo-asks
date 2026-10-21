@@ -1,0 +1,19 @@
+popover rect (collapsed): l=1106 r=1526 w=420 t=32 b=319
+popover overflow-x=scroll scrollWidth=418 clientWidth=418
+popover card 1 (collapsed) A3: Keep carts in Redis or Postgres?: l=1115 r=1517 w=402 t=60 b=99 insidePopoverRight=true gapToRight=9 buttonsInRow=1 ellipsisStyle=false
+popover card 2 (collapsed) A1: PR #29 Stripe webhook retries is ready: l=1115 r=1517 w=402 t=105 b=144 insidePopoverRight=true gapToRight=9 buttonsInRow=1 ellipsisStyle=false
+popover card 3 (collapsed) A4: File an issue for the flaky tax-rate test?: l=1115 r=1517 w=402 t=150 b=189 insidePopoverRight=true gapToRight=9 buttonsInRow=1 ellipsisStyle=false
+popover card 4 (collapsed) A2: PR #30 drop the legacy coupon code: merging: l=1115 r=1517 w=402 t=216 b=272 insidePopoverRight=true gapToRight=9 buttonsInRow=1 ellipsisStyle=false
+popover title 1: Keep carts in Redis or Postgres?
+popover title 2: PR #29 Stripe webhook retries is ready
+popover title 3: File an issue for the flaky tax-rate test?
+popover title 4: PR #30 drop the legacy coupon code: merging
+panel rect: l=32 r=652 w=620 t=32 b=652
+panel card 1 (collapsed) A3: Keep carts in Redis or Postgres?: l=49 r=635 w=586 t=106 b=145 buttonsInRow=1
+panel card 2 (collapsed) A1: PR #29 Stripe webhook retries is ready: l=49 r=635 w=586 t=151 b=190 buttonsInRow=1
+panel card 3 (collapsed) A4: File an issue for the flaky tax-rate test?: l=49 r=635 w=586 t=196 b=235 buttonsInRow=1
+panel card 4 (collapsed) A2: PR #30 drop the legacy coupon code: merging: l=49 r=635 w=586 t=266 b=305 buttonsInRow=1
+popover rect (expanded): l=980 r=1400 w=420 t=32 b=472
+popover card 1 (expanded): l=989 r=1391 w=402 t=60 b=598 insidePopoverRight=true gapToRight=9 buttons=8
+popover card 1 (re-collapsed): l=989 r=1391 w=402 t=60 b=99 buttons=1 height=39
+non-GET requests: 0

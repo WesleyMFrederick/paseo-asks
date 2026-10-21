@@ -40,7 +40,6 @@ export function useAsks(workspaceId?: string) {
 export function AsksView({ theme, compact, workspaceId, openAgent }: ViewProps) {
   const styles = useMemo(() => makeStyles(theme, compact), [theme, compact]);
   const asks = useAsks(workspaceId);
-  const [expanded, setExpanded] = useState<string | null>(null);
 
   if (asks.isPending) return <Message styles={styles} text="Loading asks…" />;
   if (asks.isError) return <Message styles={styles} text={`Could not load asks: ${asks.error.message}`} danger />;
@@ -53,32 +52,43 @@ export function AsksView({ theme, compact, workspaceId, openAgent }: ViewProps) 
       {groups.map(([groupId, items]) => (
         <View key={groupId} style={styles.group}>
           {!workspaceId && <Text style={styles.workspace}>{asks.data.workspaceNames?.[groupId] ?? groupId}</Text>}
-          {(["open", "in_progress"] as const).map((status) => {
-            const rows = items.filter((ask) => ask.status === status);
-            if (rows.length === 0) return null;
-            return (
-              <View key={status} style={styles.section}>
-                <Text style={styles.sectionTitle}>{status === "open" ? "NEEDS YOU" : "IN PROGRESS"}</Text>
-                {rows.map((ask) => {
-                  const key = `${ask.workspaceId}/${ask.id}`;
-                  return (
-                    <AskRow
-                      key={key}
-                      ask={ask}
-                      styles={styles}
-                      theme={theme}
-                      expanded={expanded === key}
-                      onToggle={() => setExpanded(expanded === key ? null : key)}
-                      openAgent={openAgent}
-                    />
-                  );
-                })}
-              </View>
-            );
-          })}
+          <AskSections asks={items} styles={styles} theme={theme} openAgent={openAgent} />
         </View>
       ))}
     </ScrollView>
+  );
+}
+
+/** The asks list, collapsed rows that open on tap, split into NEEDS YOU and IN PROGRESS. Shared by the panel, the global screen and the pill popover. */
+function AskSections(props: { asks: readonly Ask[]; styles: Styles; theme: PluginTheme; openAgent?: (agentId: string) => void }) {
+  const { asks, styles, theme, openAgent } = props;
+  const [expanded, setExpanded] = useState<string | null>(null);
+  return (
+    <>
+      {(["open", "in_progress"] as const).map((status) => {
+        const rows = asks.filter((ask) => ask.status === status);
+        if (rows.length === 0) return null;
+        return (
+          <View key={status} style={styles.section}>
+            <Text style={styles.sectionTitle}>{status === "open" ? "NEEDS YOU" : "IN PROGRESS"}</Text>
+            {rows.map((ask) => {
+              const key = `${ask.workspaceId}/${ask.id}`;
+              return (
+                <AskRow
+                  key={key}
+                  ask={ask}
+                  styles={styles}
+                  theme={theme}
+                  expanded={expanded === key}
+                  onToggle={() => setExpanded(expanded === key ? null : key)}
+                  openAgent={openAgent}
+                />
+              );
+            })}
+          </View>
+        );
+      })}
+    </>
   );
 }
 
@@ -98,12 +108,11 @@ export function AgentAsks(props: { theme: PluginTheme; compact: boolean; workspa
   if (asks.isPending) return <Message styles={styles} text="Loading asks…" />;
   if (asks.isError) return <Message styles={styles} text={`Could not load asks: ${asks.error.message}`} danger />;
   const mine = asks.data.asks.filter((ask) => ask.ownerAgentId === agentId);
+  // No own ScrollView or width: the host popover sizes (280–420 wide) and scrolls it.
   return (
-    <ScrollView style={styles.popover} contentContainerStyle={styles.popoverContent}>
+    <View style={styles.popoverContent}>
       {mine.length === 0 && <Text style={styles.muted}>This agent has no open asks.</Text>}
-      {mine.map((ask) => (
-        <AskRow key={ask.id} ask={ask} styles={styles} theme={theme} />
-      ))}
+      <AskSections asks={mine} styles={styles} theme={theme} />
       <View style={styles.buttons}>
         <Button
           styles={styles}
@@ -112,7 +121,7 @@ export function AgentAsks(props: { theme: PluginTheme; compact: boolean; workspa
           onPress={() => mutation.mutate()}
         />
       </View>
-    </ScrollView>
+    </View>
   );
 }
 
@@ -120,28 +129,23 @@ function AskRow(props: {
   ask: Ask;
   styles: Styles;
   theme: PluginTheme;
-  expanded?: boolean;
-  /** Absent: the row is always fully open. */
-  onToggle?(): void;
+  expanded: boolean;
+  onToggle(): void;
   openAgent?: (agentId: string) => void;
 }) {
-  const { ask, styles, theme } = props;
-  // Always open in the popover: the full ask, body and buttons, with nothing to discover.
-  const expanded = props.expanded || !props.onToggle;
+  const { ask, styles, theme, expanded } = props;
   return (
-    <View style={[styles.card, props.expanded && styles.cardExpanded]}>
+    <View style={[styles.card, expanded && styles.cardExpanded]}>
       <Pressable
-        accessibilityRole={props.onToggle ? "button" : "text"}
+        accessibilityRole="button"
         accessibilityLabel={`${ask.id}: ${ask.title}`}
         onPress={props.onToggle}
-        disabled={!props.onToggle}
         style={styles.row}
       >
         <Icon name={KIND_ICONS[ask.kind]} size={16} color={theme.colors.foregroundMuted} />
         <Text style={styles.id}>{ask.id}</Text>
-        <Text style={styles.title} numberOfLines={expanded ? undefined : 1}>
-          {ask.title}
-        </Text>
+        {/* The title wraps rather than truncating: a collapsed row stays readable at any width. */}
+        <Text style={styles.title}>{ask.title}</Text>
         {ask.pr && <PrBadge pr={ask.pr} styles={styles} />}
         {ask.orphaned && <Text style={styles.orphaned}>orphaned</Text>}
         <Text style={styles.age}>{age(ask.updatedAt)}</Text>
@@ -315,8 +319,7 @@ function makeStyles(theme: PluginTheme, compact: boolean) {
   return {
     screen: { flex: 1, backgroundColor: colors.surface0 },
     content: { padding: compact ? 12 : 16, gap: 16 },
-    popover: { maxHeight: 520, width: compact ? undefined : 420, backgroundColor: colors.surface0 },
-    popoverContent: { padding: 8, gap: 8 },
+    popoverContent: { width: "100%" as const, gap: 8 },
     group: { gap: 12 },
     section: { gap: 6 },
     workspace: { color: colors.foreground, fontSize: 15, fontWeight: "600" as const },
