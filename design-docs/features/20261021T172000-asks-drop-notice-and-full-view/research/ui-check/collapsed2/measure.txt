@@ -1,0 +1,14 @@
+popover rect left=1106 right=1526 width=420 height=287
+collapsed card "A3: Keep carts in Redis or Postgres?" left=1115 right=1517 height=39 inside textOverflow=clip truncated=false
+collapsed card "A1: PR #29 Stripe webhook retries is ready" left=1115 right=1517 height=39 inside textOverflow=clip truncated=false
+collapsed card "A4: File an issue for the flaky tax-rate test?" left=1115 right=1517 height=39 inside textOverflow=clip truncated=false
+collapsed card "A2: PR #30 drop the legacy coupon code: merging" left=1115 right=1517 height=56 inside textOverflow=clip truncated=false
+expanded popover right=1400
+expanded card "A3: Keep carts in Redis or Postgres?" right=1391 height=538 inside
+expanded card "A1: PR #29 Stripe webhook retries is ready" right=1391 height=39 inside
+expanded card "A4: File an issue for the flaky tax-rate test?" right=1391 height=39 inside
+expanded card "A2: PR #30 drop the legacy coupon code: merging" right=1391 height=56 inside
+recollapsed card "A3: Keep carts in Redis or Postgres?" right=1391 height=39 inside
+recollapsed card "A1: PR #29 Stripe webhook retries is ready" right=1391 height=39 inside
+recollapsed card "A4: File an issue for the flaky tax-rate test?" right=1391 height=39 inside
+recollapsed card "A2: PR #30 drop the legacy coupon code: merging" right=1391 height=56 inside

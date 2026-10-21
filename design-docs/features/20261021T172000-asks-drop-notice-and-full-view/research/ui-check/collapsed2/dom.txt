@@ -1,0 +1,64 @@
+POPOVER COLLAPSED
+popover row: A3 | Keep carts in Redis or Postgres? | 2h
+popover row: A1 | PR #29 Stripe webhook retries is ready | checks ✓ | 3h
+popover row: A4 | File an issue for the flaky tax-rate test? | 3h
+popover row: A2 | PR #30 drop the legacy coupon code: merging | checks … | 4m
+PANEL COLLAPSED
+panel row (h=39): A3 | Keep carts in Redis or Postgres? | 2h
+panel row (h=39): A1 | PR #29 Stripe webhook retries is ready | checks ✓ | 3h
+panel row (h=39): A4 | File an issue for the flaky tax-rate test? | 3h
+panel row (h=39): A2 | PR #30 drop the legacy coupon code: merging | checks … | 4m
+POPOVER EXPANDED TEXT
+expanded: NEEDS YOU
+expanded: A3
+expanded: Keep carts in Redis or Postgres?
+expanded: 2h
+expanded: Why decide now: the checkout rework writes the cart on every click, and the storage choice shapes the CartStore interface all of it codes against.
+expanded: What's true today: carts live in the session cookie, capped at 4 KB, so a long cart is silently cut short:
+expanded: res.cookie('cart', JSON.stringify(cart)) // throws past 4 KB in some browsers
+expanded: Options:
+expanded: •
+expanded: Postgres (recommended). Already running, transactional with orders, nothing new to operate.
+expanded: •
+expanded: Redis. Faster writes and built-in expiry, but one more service on call, and carts could vanish on eviction.
+expanded: •
+expanded: Keep the cookie. No work, and the 4 KB cut-off stays.
+expanded: Benchmarks in the spike PR.
+expanded: Postgres ★
+expanded: Redis
+expanded: Keep the cookie
+expanded: Reply
+expanded: Done
+expanded: Drop
+expanded: Discuss
+expanded: A1
+expanded: PR #29 Stripe webhook retries is ready
+expanded: checks ✓
+expanded: 3h
+expanded: A4
+expanded: File an issue for the flaky tax-rate test?
+expanded: 3h
+expanded: IN PROGRESS
+expanded: A2
+expanded: PR #30 drop the legacy coupon code: merging
+expanded: checks …
+expanded: 4m
+expanded: Refresh asks
+POPOVER AFTER SECOND CLICK TEXT
+after: NEEDS YOU
+after: A3
+after: Keep carts in Redis or Postgres?
+after: 2h
+after: A1
+after: PR #29 Stripe webhook retries is ready
+after: checks ✓
+after: 3h
+after: A4
+after: File an issue for the flaky tax-rate test?
+after: 3h
+after: IN PROGRESS
+after: A2
+after: PR #30 drop the legacy coupon code: merging
+after: checks …
+after: 4m
+after: Refresh asks
