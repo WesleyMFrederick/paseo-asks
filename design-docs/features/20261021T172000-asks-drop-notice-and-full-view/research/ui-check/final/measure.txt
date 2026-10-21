@@ -1,0 +1,9 @@
+elements measured: 143
+wide elements: 0
+ellipsis elements: 0
+vertical scroll containers: 1 520/1238
+popover size: clientWidth=438, scrollWidth=438, clientHeight=618, scrollHeight=618
+A3 code line wrapped: clientWidth=360, scrollWidth=360, rects=1, height=36
+note boxes: 4 Note or reply (optional) | Note or reply (optional) | Note or reply (optional) | Note or reply (optional)
+elements past popover left/right edge: 0
+links: 
