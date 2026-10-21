@@ -1,0 +1,16 @@
+Width research, getpaseo/paseo origin/main ce67efa9e, SDK 0.12
+popover.tsx:42 (allowed props, no width)
+  "children" | "pages" | "sheetTitle" | "sheetTrailing" | "side" | "align" | "offset" | "testID"
+popover.tsx:50
+  return <MenuSurface {...props} minWidth={280} maxWidth={420} maxHeight={440} scrollable />;
+storage.ts:91 (only width setting: chat content)
+  contentMaxWidth: number | null;
+buttons.d.ts:16 (pill content props)
+export type PluginButtonContentProps = PluginHostProps & PluginButtonContext & {
+    close(): void;
+contracts.d.ts:124 (plugin can open a panel)
+    openPanel(id: string, options: PluginClientOpenPanelOptions): void;
+adaptive-modal-sheet.tsx:90 (SDK Modal cap)
+    maxWidth: 520,
+asks index.client.tsx:112 (asks panel already registered)
+  client.addWorkspacePanel({ id: "asks", title: "Asks", icon: "Inbox", context: "workspace", Component: WorkspacePanel });

@@ -47,6 +47,7 @@ Pill: one exported `pillLabel(asks, agentId)` in `shared/asks.ts`, using the sam
 - `index.client.tsx`: pill uses `pillLabel`.
 - `client/AsksView.tsx`: one shared `AskSections` list (collapsed rows, tap to open) for the panel, the global screen and the pill popover. Titles wrap instead of truncating. The popover has no width or ScrollView of its own, because the host already sizes it (280–420 wide) and scrolls it (max 440 high). Toast after every act says who heard (warning if nobody); error toast on refusal; in-progress asks keep their close/open actions.
 - Correction after Wesley's review: the first version kept every popover ask fully open (not asked for) and set a fixed 420 width inside the host's 420 cap, so the host padding cut off the right side. See [principles-review.md](design-docs/features/20261021T172000-asks-drop-notice-and-full-view/principles-review.md).
+- Width (Wesley: wider on wide displays, narrower on phone): no setting or plugin option widens the popover. Two search agents checked Paseo main and the 0.12 plugin kit; see [width-research.txt](design-docs/features/20261021T172000-asks-drop-notice-and-full-view/research/host-popover-width/width-research.txt). Wesley picked the plugin-only fix: on wide layouts the popover shows **Open wide**. It closes the popover and calls `client.openPanel("asks", { workspaceId, agentId })`, which opens the Asks panel beside the chat (`index.client.tsx` `pillPopover`). On phones (`layout.compact`) there is no Open wide, and Paseo shows the pill as a bottom sheet.
 - README, preview mock, preview popover frame, `docs/popover.png`.
 
 ## Checks run
@@ -72,6 +73,7 @@ Pill: one exported `pillLabel(asks, agentId)` in `shared/asks.ts`, using the sam
   - `act-log.jsonl` got two lines: `"before":"open","after":"dropped","delivery":"queued"`, then `"before":"dropped","error":"A2 is already dropped; nothing was changed or sent"`.
   - Paseo's own toast on screen is not yet seen. That needs Wesley's next drop in the app.
 - Run 5 (`…/collapsed/`) **PASSED** on the preview, which now mirrors the host popover limits (`HostPopover` in `preview/main.tsx`). Rows start collapsed in both popover and panel. The two-line title wraps. Each card's right edge sits 9px inside the popover, collapsed and expanded. A second tap collapses the row.
+- Run 7 (`…/width/`) **PASSED** on the preview at 1600×1000. The popover is 420 wide and shows Open wide; the phone pill has no Open wide. After pressing it, the popover is gone and the panel is 900 wide. Calling `openPanel` from the popover in the real app is not yet seen.
 
 ## Side finding: "Timed out waiting for OMP to become ready"
 
@@ -83,6 +85,6 @@ No worker agents and no Jev calls. This session cost about $3.25 through the fir
 
 ## Open risks
 
-- The pill popover cannot be wider than 420: that is a Paseo host limit, and pill content cannot open the wide Asks screen. Wide screens get the full width in the sidebar Asks screen.
+- The pill popover itself still cannot be wider than 420: that is a Paseo host limit. Open wide hands off to the Asks panel, which shows the whole workspace, not only that agent's asks.
 - Sidebar count still counts `open` only (asks waiting on Wesley); in-progress ones wait on the agent. Left as is.
 - Same-id confusion across workspaces is explained in the README but ids are still per workspace; renaming them would break agents' existing references.

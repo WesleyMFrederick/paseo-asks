@@ -92,9 +92,9 @@ function AskSections(props: { asks: readonly Ask[]; styles: Styles; theme: Plugi
   );
 }
 
-/** One agent's asks and a Refresh that asks it to bring them up to date, for the composer pill's popover. */
-export function AgentAsks(props: { theme: PluginTheme; compact: boolean; workspaceId: string; agentId: string }) {
-  const { theme, compact, workspaceId, agentId } = props;
+/** One agent's asks, a Refresh that asks it to bring them up to date, and an Open wide to the Asks panel when given, for the composer pill's popover. */
+export function AgentAsks(props: { theme: PluginTheme; compact: boolean; workspaceId: string; agentId: string; onOpenWide?: () => void }) {
+  const { theme, compact, workspaceId, agentId, onOpenWide } = props;
   const styles = useMemo(() => makeStyles(theme, compact), [theme, compact]);
   const asks = useAsks(workspaceId);
   const refresh = useRpc(refreshAsks);
@@ -120,6 +120,7 @@ export function AgentAsks(props: { theme: PluginTheme; compact: boolean; workspa
           disabled={mutation.isPending}
           onPress={() => mutation.mutate()}
         />
+        {onOpenWide && <Button styles={styles} label="Open wide" onPress={onOpenWide} />}
       </View>
     </View>
   );

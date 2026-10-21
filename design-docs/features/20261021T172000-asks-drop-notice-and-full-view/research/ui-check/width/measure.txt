@@ -1,0 +1,6 @@
+panel width=620
+phone width=390
+popover width=420
+phone-pill width=390
+popover present=false
+panel-wide width=900

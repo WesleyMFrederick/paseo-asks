@@ -22,7 +22,7 @@ PR asks show live status from `gh`: open, merged or closed, checks, review decis
 
 - an **Asks** panel in each workspace (also in ⌘K: "Open asks for this workspace");
 - an **Asks** screen in the sidebar, covering every workspace, with a count of what's waiting;
-- an **Asks · n** (or **No asks**) pill in every agent's composer. It counts the same asks its popover lists, so in-progress ones show as **Asks · 1 in progress**, never as **No asks**. Pressing it shows each of that agent's asks in full (title, body, links, option buttons, Reply, Done, Drop), with a **Refresh asks** button that tells the agent to bring them up to date: create asks it skipped, and update or resolve stale ones.
+- an **Asks · n** (or **No asks**) pill in every agent's composer. It counts the same asks its popover lists, so in-progress ones show as **Asks · 1 in progress**, never as **No asks**. Pressing it shows that agent's asks in the same collapsed list as the sidebar (tap one to open it), with a **Refresh asks** button that tells the agent to bring them up to date: create asks it skipped, and update or resolve stale ones. Paseo caps plugin popovers at 420 wide, so on wide layouts an **Open wide** button opens the Asks panel beside the chat. Phones get Paseo's bottom sheet instead.
 
 ## How it works
 

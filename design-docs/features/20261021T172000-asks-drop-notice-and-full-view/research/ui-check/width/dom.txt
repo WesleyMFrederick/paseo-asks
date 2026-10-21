@@ -1,0 +1,11 @@
+popover button=A3 | Keep carts in Redis or Postgres? | 2h
+popover button=A1 | PR #29 Stripe webhook retries is ready | checks ✓ | 3h
+popover button=A4 | File an issue for the flaky tax-rate test? | 3h
+popover button=A2 | PR #30 drop the legacy coupon code: merging | checks … | 4m
+popover button=Refresh asks
+popover button=Open wide
+phone-pill button=A3 | Keep carts in Redis or Postgres? | 2h
+phone-pill button=A1 | PR #29 Stripe webhook retries is ready | checks ✓ | 3h
+phone-pill button=A4 | File an issue for the flaky tax-rate test? | 3h
+phone-pill button=A2 | PR #30 drop the legacy coupon code: merging | checks … | 4m
+phone-pill button=Refresh asks

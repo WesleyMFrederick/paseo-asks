@@ -45,15 +45,31 @@ function SidebarItem({ theme, currentScreen, openScreen }: PluginSidebarItemProp
   );
 }
 
-function PillPopover({ theme, layout, workspaceId, ...context }: PluginButtonContentProps) {
-  if (context.context !== "agent") return null;
-  return <AgentAsks theme={theme} compact={layout.compact} workspaceId={workspaceId} agentId={context.agentId} />;
+/** The pill's popover. Paseo caps plugin popovers at 420 wide, so on wide layouts it offers the Asks panel, which has the room. */
+function pillPopover(client: PluginClientContext) {
+  return function PillPopover({ theme, layout, workspaceId, close, ...context }: PluginButtonContentProps) {
+    if (context.context !== "agent") return null;
+    const openWide = () => {
+      close();
+      client.openPanel("asks", { workspaceId, agentId: context.agentId });
+    };
+    return (
+      <AgentAsks
+        theme={theme}
+        compact={layout.compact}
+        workspaceId={workspaceId}
+        agentId={context.agentId}
+        onOpenWide={layout.compact ? undefined : openWide}
+      />
+    );
+  };
 }
 
 /** A composer pill per agent with its open asks; pressing it shows them and a Refresh. */
 function contributePills(client: PluginClientContext): () => void {
   const pills = new Map<string, PluginButtonRegistration>();
   const lifetime = new AbortController();
+  const PillPopover = pillPopover(client);
 
   const register = (agent: { id: string; workspaceId?: string | null }) => {
     if (lifetime.signal.aborted || !agent.workspaceId || pills.has(agent.id)) return;

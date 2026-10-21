@@ -1,0 +1,7 @@
+getpaseo/paseo origin/main ce67efa9e
+packages/app/src/plugins/popover.tsx:50
+  return <MenuSurface {...props} minWidth={280} maxWidth={420} maxHeight={440} scrollable />;
+packages/app/src/components/ui/menu/menu-context.ts:112
+  const presentation: MenuPresentation = isCompact && compactMode === "sheet" ? "sheet" : "popover";
+packages/app/src/plugins/buttons/view.tsx:309
+    <MenuRoot compactMode="sheet" open={entry.open} onOpenChange={setOpen}>

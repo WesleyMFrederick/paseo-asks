@@ -1,3 +1,4 @@
+import React from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createRoot } from "react-dom/client";
 import { Text, View } from "react-native";
@@ -39,6 +40,22 @@ function HostPopover(props: { children: React.ReactNode }) {
   );
 }
 
+/** Wide pill: Open wide closes the popover and shows the Asks panel, as client.openPanel does in Paseo. Phone pill: no Open wide. */
+function WidePill() {
+  const [wide, setWide] = React.useState(false);
+  if (wide)
+    return (
+      <Frame id="panel-wide" title="Asks · shop-api (opened wide)" width={900} height={620}>
+        <AsksView theme={theme} compact={false} workspaceId="api" openAgent={() => {}} />
+      </Frame>
+    );
+  return (
+    <HostPopover>
+      <AgentAsks theme={theme} compact={false} workspaceId="api" agentId="main" onOpenWide={() => setWide(true)} />
+    </HostPopover>
+  );
+}
+
 createRoot(document.getElementById("root")!).render(
   <QueryClientProvider client={new QueryClient()}>
     <Frame id="panel" title="Asks · shop-api" width={620} height={620}>
@@ -47,8 +64,9 @@ createRoot(document.getElementById("root")!).render(
     <Frame id="phone" title="Asks" width={390} height={720}>
       <AsksView theme={theme} compact openAgent={() => {}} />
     </Frame>
-    <HostPopover>
-      <AgentAsks theme={theme} compact={false} workspaceId="api" agentId="main" />
-    </HostPopover>
+    <WidePill />
+    <Frame id="phone-pill" title="Asks (phone pill sheet)" width={390} height={520}>
+      <AgentAsks theme={theme} compact workspaceId="api" agentId="main" />
+    </Frame>
   </QueryClientProvider>,
 );
