@@ -1,8 +1,8 @@
-import { appendFileSync } from "node:fs";
+import { appendFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { PaseoApi } from "@getpaseo/client";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
-import { actOnAsk, discussAsk, listAsks, OPEN_STATUSES, refreshAsks } from "./shared/asks";
+import { actOnAsk, discussAsk, listAsks, OPEN_STATUSES, popoverCensus, refreshAsks } from "./shared/asks";
 import { AgentDirectory } from "./server/agents";
 import { installBridge } from "./server/bridge";
 import { discuss } from "./server/discuss";
@@ -115,6 +115,12 @@ export default function contribute(server: PluginServerContext) {
   server.handle(refreshAsks, ({ agentId }, { paseo: api }) => {
     capture(api);
     return service.refresh(agentId);
+  });
+  // TEMPORARY diagnostic: keep the client's popover census where the engineer can read it.
+  server.handle(popoverCensus, (census) => {
+    const saved = join(dir, "popover-census.json");
+    writeFileSync(saved, JSON.stringify({ at: new Date().toISOString(), ...census }, null, 2));
+    return { saved };
   });
   const startDiscussion = (api: PaseoApi, workspaceId: string, id: string) => {
     const ask = store.get(workspaceId, id);

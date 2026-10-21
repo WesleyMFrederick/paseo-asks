@@ -7,9 +7,11 @@ import type {
   PluginWorkspacePanelProps,
 } from "@getpaseo/plugin/client";
 import { SidebarRow } from "@getpaseo/plugin/client/ui";
+import type { ComponentType } from "react";
 import { Text } from "react-native";
 import { AgentAsks, AsksView, POLL_MS, useAsks } from "./client/AsksView";
-import { listAsks, pillLabel } from "./shared/asks";
+import { runPopoverCensus } from "./client/popover-census";
+import { listAsks, pillLabel, popoverCensus } from "./shared/asks";
 
 function WorkspacePanel({ theme, layout, workspaceId, navigation }: PluginWorkspacePanelProps) {
   return (
@@ -116,6 +118,10 @@ function contributePills(client: PluginClientContext): () => void {
     .catch((error) => {
       if (!lifetime.signal.aborted) console.error("[asks] agent observation failed", error);
     });
+  // TEMPORARY diagnostic: count the popovers one press opens (duplicate-popover bug).
+  void runPopoverCensus(PillPopover as ComponentType<never>, (census) => client.rpc(popoverCensus, census), lifetime.signal).catch(
+    (error) => console.error("[asks] popover census failed", error),
+  );
 
   return () => {
     lifetime.abort();

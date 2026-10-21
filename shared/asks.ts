@@ -110,6 +110,13 @@ export const refreshAsks = defineRpc({
   output: z.object({ sent: z.boolean() }),
 });
 
+/** TEMPORARY diagnostic: the client's one-shot popover census, saved to the plugin data dir. */
+export const popoverCensus = defineRpc({
+  name: "asks.popover-census",
+  input: z.record(z.string(), z.unknown()),
+  output: z.object({ saved: z.string() }),
+});
+
 const PR_URL = /^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+/;
 
 export function prUrlOf(ask: Pick<Ask, "links">): string | undefined {
