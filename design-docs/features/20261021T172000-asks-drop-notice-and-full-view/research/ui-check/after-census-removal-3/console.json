@@ -1,0 +1,47 @@
+{
+ "console": {
+  "entries": [
+   {
+    "seq": 1,
+    "ts": 1792614157780.854,
+    "type": "console",
+    "level": "debug",
+    "text": "[vite] connecting...",
+    "location": "http://localhost:5199/@vite/client:934:8",
+    "args": [
+     "[vite] connecting..."
+    ]
+   },
+   {
+    "seq": 2,
+    "ts": 1792614157784.016,
+    "type": "console",
+    "level": "debug",
+    "text": "[vite] connected.",
+    "location": "http://localhost:5199/@vite/client:1047:11",
+    "args": [
+     "[vite] connected."
+    ]
+   },
+   {
+    "seq": 3,
+    "ts": 1792614157857.513,
+    "type": "console",
+    "level": "info",
+    "text": "%cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold",
+    "location": "http://localhost:5199/node_modules/.vite/deps/client-kybKvOYx.js?v=923ae838:13246:48",
+    "args": [
+     "%cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools",
+     "font-weight:bold"
+    ]
+   }
+  ],
+  "nextSeq": 3,
+  "dropped": 0
+ },
+ "errors": {
+  "entries": [],
+  "nextSeq": 3,
+  "dropped": 0
+ }
+}
