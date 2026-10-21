@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { Outbox, type AgentState, type Courier } from "../server/outbox";
 import { AsksService } from "../server/service";
 import { AskStore } from "../server/store";
+import { pillLabel, type Ask } from "../shared/asks";
 
 class FakeCourier implements Courier {
   states = new Map<string, AgentState>();
@@ -68,11 +69,11 @@ describe("asks", () => {
   it("delivers a human's choice to the owning agent once, and only after its turn ends", async () => {
     await service.callTool(AGENT, "ask_create", decision);
     courier.states.set(AGENT, "running");
-    const { ask, notified } = await service.act({ workspaceId: WS, id: "A1", verb: "action", actionId: "a2", note: "and update AGENTS.md" });
+    const { ask, delivery } = await service.act({ workspaceId: WS, id: "A1", verb: "action", actionId: "a2", note: "and update AGENTS.md" });
     await outbox.flush();
     expect(ask.status).toBe("done");
     expect(ask.outcome).toMatchObject({ label: "b: squash-only", by: "human" });
-    expect(notified).toBe(true);
+    expect(delivery).toBe("queued");
     expect(courier.sent).toEqual([]);
 
     courier.states.set(AGENT, "idle");
@@ -136,7 +137,38 @@ describe("asks", () => {
     await service.act({ workspaceId: WS, id: "A1", verb: "reply", note: "eu-central" });
     await outbox.flush();
     expect(store.get(WS, "A1")?.orphaned).toBe(true);
-    expect((await service.act({ workspaceId: WS, id: "A1", verb: "done" })).notified).toBe(false);
+    expect((await service.act({ workspaceId: WS, id: "A1", verb: "done" })).delivery).toBe("nobody");
+  });
+
+  it("a human drop tells the owner and reports it sent when the owner is idle", async () => {
+    await service.callTool(AGENT, "ask_create", { kind: "followup", title: "Merge OK waiting" });
+    const { ask, delivery } = await service.act({ workspaceId: WS, id: "A1", verb: "drop" });
+    expect(ask.status).toBe("dropped");
+    expect(store.get(WS, "A1")?.status).toBe("dropped");
+    expect(delivery).toBe("sent");
+    expect(courier.sent).toEqual([
+      { agentId: AGENT, text: "[asks] A1 (Merge OK waiting) dropped by the human; do not pursue it.", messageId: expect.any(String) },
+    ]);
+  });
+
+  it("acting on an ask that is already closed fails loudly and tells nobody again", async () => {
+    await service.callTool(AGENT, "ask_create", { kind: "followup", title: "Merge OK waiting" });
+    await service.act({ workspaceId: WS, id: "A1", verb: "drop", note: "first" });
+    await expect(service.act({ workspaceId: WS, id: "A1", verb: "drop" })).rejects.toThrow("A1 is already dropped");
+    await expect(service.act({ workspaceId: WS, id: "A1", verb: "done" })).rejects.toThrow("A1 is already dropped");
+    expect(courier.sent).toHaveLength(1);
+    expect(store.get(WS, "A1")?.outcome?.note).toBe("first");
+  });
+
+  it("the same id in two workspaces names two asks; a drop reaches only the owner in its workspace", async () => {
+    const other = new AsksService(store, outbox, async () => "wks_2");
+    await service.callTool(AGENT, "ask_create", { kind: "followup", title: "Merge OK waiting" });
+    await other.callTool("agent-2", "ask_create", { kind: "followup", title: "Merge OK in tab" });
+    await other.callTool("agent-2", "ask_create", { kind: "question", title: "CoS long replies?" });
+    await service.callTool(AGENT, "ask_create", { kind: "followup", title: "Second here" });
+    await service.act({ workspaceId: "wks_2", id: "A2", verb: "drop" });
+    expect(courier.sent.map((sent) => sent.agentId)).toEqual(["agent-2"]);
+    expect(store.get(WS, "A2")?.status).toBe("open");
   });
 
   it("lists only open asks by default, and only the caller's with scope mine", async () => {
@@ -145,5 +177,16 @@ describe("asks", () => {
     await service.callTool(AGENT, "ask_update", { id: "A2", status: "dropped" });
     expect((await service.callTool(AGENT, "ask_list", {})).text).toBe("A1 [open] decision: Squash-only merges?");
     expect((await service.callTool(AGENT, "ask_list", { status: "all" })).text.split("\n")).toHaveLength(2);
+  });
+});
+
+describe("composer pill label", () => {
+  const ask = (ownerAgentId: string, status: Ask["status"]) => ({ ownerAgentId, status });
+
+  it("counts every ask the popover lists for that agent, so an in-progress ask never shows as No asks", () => {
+    expect(pillLabel([], AGENT)).toBe("No asks");
+    expect(pillLabel([ask(AGENT, "in_progress")], AGENT)).toBe("Asks · 1 in progress");
+    expect(pillLabel([ask(AGENT, "open"), ask(AGENT, "open"), ask(AGENT, "in_progress")], AGENT)).toBe("Asks · 2 · 1 in progress");
+    expect(pillLabel([ask("someone-else", "open"), ask(AGENT, "done"), ask(AGENT, "dropped")], AGENT)).toBe("No asks");
   });
 });

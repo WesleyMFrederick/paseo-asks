@@ -48,6 +48,11 @@ export class Outbox {
     return this.entries.filter((entry) => entry.state === "pending" && (!agentId || entry.agentId === agentId));
   }
 
+  /** Where one message stands; undefined once it has aged out of the kept history. */
+  state(id: string): Delivery["state"] | undefined {
+    return this.entries.find((entry) => entry.id === id)?.state;
+  }
+
   enqueue(input: Pick<Delivery, "agentId" | "workspaceId" | "askId" | "text">): Delivery {
     const delivery: Delivery = {
       ...input,

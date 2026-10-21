@@ -1,3 +1,5 @@
+import { appendFileSync } from "node:fs";
+import { join } from "node:path";
 import type { PaseoApi } from "@getpaseo/client";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { actOnAsk, discussAsk, listAsks, OPEN_STATUSES, refreshAsks } from "./shared/asks";
@@ -53,7 +55,11 @@ export default function contribute(server: PluginServerContext) {
       if (ask && OPEN_STATUSES.includes(ask.status)) await store.update(workspaceId, ask.id, { orphaned: true });
     }
   });
-  const service = new AsksService(store, outbox, (agentId) => agents.workspaceOf(agentId));
+  // Every human action on an ask, applied or refused, one JSON line each.
+  const actLog = join(dir, "act-log.jsonl");
+  const service = new AsksService(store, outbox, (agentId) => agents.workspaceOf(agentId), (entry) =>
+    appendFileSync(actLog, `${JSON.stringify(entry)}\n`),
+  );
   const lastOutputs = new LastOutputs(dir);
   const gh = findGh();
   if (!gh) console.error("[asks] gh not found; PR asks will show no live status");

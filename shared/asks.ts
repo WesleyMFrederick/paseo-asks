@@ -63,6 +63,15 @@ export type Ask = z.infer<typeof AskSchema>;
 
 export const OPEN_STATUSES: readonly Ask["status"][] = ["open", "in_progress"];
 
+/** The composer pill's face: the same asks its popover lists (this agent's open and in-progress ones). */
+export function pillLabel(asks: readonly Pick<Ask, "ownerAgentId" | "status">[], agentId: string): string {
+  const mine = asks.filter((ask) => ask.ownerAgentId === agentId);
+  const open = mine.filter((ask) => ask.status === "open").length;
+  const working = mine.filter((ask) => ask.status === "in_progress").length;
+  const parts = [open > 0 ? `${open}` : "", working > 0 ? `${working} in progress` : ""].filter(Boolean);
+  return parts.length ? `Asks · ${parts.join(" · ")}` : "No asks";
+}
+
 export const listAsks = defineRpc({
   name: "asks.list",
   input: z.object({ workspaceId: z.string().optional(), includeClosed: z.boolean().optional() }),
@@ -83,7 +92,8 @@ export const actOnAsk = defineRpc({
     actionId: z.string().optional(),
     note: z.string().optional(),
   }),
-  output: z.object({ ask: AskSchema, notified: z.boolean() }),
+  /** How the owning agent hears of it: now, when its current turn ends, or never (orphaned). */
+  output: z.object({ ask: AskSchema, delivery: z.enum(["sent", "queued", "nobody"]) }),
 });
 
 /** Open (or reopen) a read-only side chat about one ask. */

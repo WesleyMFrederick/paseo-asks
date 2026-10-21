@@ -10,7 +10,7 @@ export function useRpc(contract: Contract) {
     }
     if (contract.name === "asks.discuss") return { agentId: "side-chat", created: true };
     const ask = asks.find((candidate) => candidate.workspaceId === input.workspaceId && candidate.id === input.id)!;
-    return { ask, notified: true };
+    return { ask, delivery: "sent" as const };
   };
 }
 

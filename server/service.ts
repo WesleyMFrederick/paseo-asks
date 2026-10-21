@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { ACTION_KINDS, ASK_KINDS, ASK_STATUSES, OPEN_STATUSES, type Ask } from "../shared/asks";
 import { REFRESH } from "./nudge";
-import type { Outbox } from "./outbox";
+import type { Delivery as OutboxDelivery, Outbox } from "./outbox";
 import type { AskStore, NewAsk } from "./store";
 
 export const INSTRUCTIONS = `Asks are the human's list of what you need from them, shown in Paseo outside this chat, with buttons that answer you.
@@ -74,11 +74,32 @@ export interface ToolResult {
   isError?: boolean;
 }
 
+export type Delivery = "sent" | "queued" | "nobody";
+
+export interface ActInput {
+  workspaceId: string;
+  id: string;
+  verb: "action" | "done" | "drop" | "reply";
+  actionId?: string;
+  note?: string;
+}
+
+/** One line per human action on an ask, success or refusal. */
+export interface ActLogEntry extends ActInput {
+  at: string;
+  ownerAgentId?: string;
+  before?: Ask["status"];
+  after?: Ask["status"];
+  delivery?: Delivery;
+  error?: string;
+}
+
 export class AsksService {
   constructor(
     private readonly store: AskStore,
     private readonly outbox: Outbox,
     private readonly workspaceOf: (agentId: string) => Promise<string | null>,
+    private readonly log: (entry: ActLogEntry) => void = () => {},
   ) {}
 
   async callTool(agentId: string | null, name: string, args: unknown): Promise<ToolResult> {
@@ -130,15 +151,25 @@ export class AsksService {
     }
   }
 
-  /** A human disposes of an ask from the UI. Returns whether the owning agent will be told. */
-  async act(input: {
-    workspaceId: string;
-    id: string;
-    verb: "action" | "done" | "drop" | "reply";
-    actionId?: string;
-    note?: string;
-  }): Promise<{ ask: Ask; notified: boolean }> {
+  /**
+   * A human disposes of an ask from the UI. Fails on an ask that is already closed. Returns how the
+   * owning agent hears of it: "sent" now, "queued" until its current turn ends, or "nobody" (orphaned).
+   */
+  async act(input: ActInput): Promise<{ ask: Ask; delivery: Delivery }> {
+    const before = this.store.get(input.workspaceId, input.id);
+    try {
+      const result = await this.disposeOf(input);
+      this.log({ at: new Date().toISOString(), ...input, ownerAgentId: result.ask.ownerAgentId, before: before?.status, after: result.ask.status, delivery: result.delivery });
+      return result;
+    } catch (error) {
+      this.log({ at: new Date().toISOString(), ...input, ownerAgentId: before?.ownerAgentId, before: before?.status, error: error instanceof Error ? error.message : String(error) });
+      throw error;
+    }
+  }
+
+  private async disposeOf(input: ActInput): Promise<{ ask: Ask; delivery: Delivery }> {
     const ask = this.require(input.workspaceId, input.id);
+    if (!OPEN_STATUSES.includes(ask.status)) throw new Error(`${ask.id} is already ${ask.status}; nothing was changed or sent`);
     const note = input.note?.trim() || undefined;
     const at = new Date().toISOString();
     const head = `[asks] ${ask.id} (${ask.title})`;
@@ -174,15 +205,18 @@ export class AsksService {
         message = `${head} reply from the human: "${note}". Update or resolve ${ask.id} accordingly.`;
         break;
     }
-    if (ask.orphaned) return { ask: next, notified: false };
-    this.notify(ask, message);
-    return { ask: next, notified: true };
+    if (ask.orphaned) return { ask: next, delivery: "nobody" };
+    const sent = this.notify(ask, message);
+    await this.outbox.flush(ask.ownerAgentId);
+    const state = this.outbox.state(sent.id);
+    return { ask: next, delivery: state === "sent" ? "sent" : state === "pending" ? "queued" : "nobody" };
   }
 
   /** Queue a message for the ask's owner; it goes out once the owner is between turns. */
-  notify(ask: Ask, text: string): void {
-    this.outbox.enqueue({ agentId: ask.ownerAgentId, workspaceId: ask.workspaceId, askId: ask.id, text });
+  notify(ask: Ask, text: string): OutboxDelivery {
+    const delivery = this.outbox.enqueue({ agentId: ask.ownerAgentId, workspaceId: ask.workspaceId, askId: ask.id, text });
     void this.outbox.flush(ask.ownerAgentId);
+    return delivery;
   }
 
   /** Queue a message about asks in general. The same text already waiting is not queued twice. */
