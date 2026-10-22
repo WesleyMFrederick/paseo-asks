@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
 import { describe, expect, it } from "vitest";
+import type { Ask } from "../shared/asks";
 import { endsWithQuestion, NUDGE, REFRESH, shouldNudge } from "../server/nudge";
 import { Outbox, type AgentState, type Courier } from "../server/outbox";
 import { AsksService } from "../server/service";
@@ -40,6 +41,45 @@ describe("shouldNudge", () => {
 
   it("joins streamed reply chunks", () => {
     expect(shouldNudge([user("go"), reply("Which "), reply("one?")])).toBe(true);
+  });
+
+  describe("re-shown card an open ask already records", () => {
+    const ask = (over: Partial<Ask>): Ask => ({
+      id: "A9", workspaceId: "wks_1", ownerAgentId: "agent", kind: "decision", title: "Pick the nudge fix",
+      actions: [], links: [], status: "open", createdAt: "2026-10-21T00:00:00Z", updatedAt: "2026-10-21T00:00:00Z", ...over,
+    });
+    const card = [user("show it again"), reply("Pick the nudge fix\n\nOption one or two?")];
+    const idCard = [user("show it again"), reply("Card file decision-toolu_01AbC.\n\nWhich option?")];
+
+    it("does not nudge when the card's decision id is in an open ask's body", () => {
+      // Given an open decision ask whose body names the card file
+      const open = ask({ title: "Unrelated heading", body: "card: decision-toolu_01AbC.md" });
+      // When the reply re-shows that card, Then no nudge
+      expect(shouldNudge(idCard, [open])).toBe(false);
+    });
+
+    it("does not nudge when the reply carries an open ask's title", () => {
+      // Given an open ask titled like the card
+      const open = ask({ title: "  pick the NUDGE   fix " });
+      // When the reply re-shows the card, Then no nudge
+      expect(shouldNudge(card, [open])).toBe(false);
+    });
+
+    it("nudges when the matching ask is done or dropped", () => {
+      // Given closed asks that match by id and by title
+      const closed = [ask({ status: "done", body: "decision-toolu_01AbC" }), ask({ status: "dropped" })];
+      // When either card is re-shown, Then the nudge still fires
+      expect(shouldNudge(idCard, closed)).toBe(true);
+      expect(shouldNudge(card, closed)).toBe(true);
+    });
+
+    it("nudges a question when the only open ask is unrelated", () => {
+      // Given an open ask about something else
+      const other = ask({ title: "Review the billing PR", body: "decision-toolu_other" });
+      // When the reply asks a different question, Then the nudge fires
+      expect(shouldNudge(idCard, [other])).toBe(true);
+      expect(shouldNudge(card, [other])).toBe(true);
+    });
   });
 });
 

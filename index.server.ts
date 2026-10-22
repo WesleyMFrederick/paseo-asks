@@ -81,8 +81,9 @@ export default function contribute(server: PluginServerContext) {
     capture(api);
     lastOutputs.record(agent.id, timeline);
     // Agents sometimes ask in chat and skip ask_create; one reminder per such turn. Side chats talk to the human directly.
-    const sideChat = store.list(agent.workspaceId ?? undefined).some((ask) => ask.discussionAgentId === agent.id);
-    if (outcome.kind === "completed" && agent.workspaceId && !sideChat && shouldNudge(timeline)) {
+    const asks = store.list(agent.workspaceId ?? undefined);
+    const sideChat = asks.some((ask) => ask.discussionAgentId === agent.id);
+    if (outcome.kind === "completed" && agent.workspaceId && !sideChat && shouldNudge(timeline, asks.filter((ask) => OPEN_STATUSES.includes(ask.status)))) {
       service.message(agent.id, agent.workspaceId, NUDGE);
     }
     void outbox.flush(agent.id);
