@@ -33,7 +33,7 @@ Not reproducible on demand yet. Observed on a desktop window open for several ho
 
 **Where did this happen:** Desktop (Electron)
 **Paseo version:** 0.12.0
-**OS version:** macOS 15.6 (Darwin 24.6.0), Apple silicon
+**OS version:** macOS 15.7.3, Apple silicon
 **Agent provider:** Not relevant
 
 **Logs** (raw data collected by a one-time probe in the plugin, which listed every mounted instance of the pill; full JSON attached)
