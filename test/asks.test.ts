@@ -55,7 +55,7 @@ describe("asks", () => {
   it("numbers asks per workspace and persists them", async () => {
     const first = await service.callTool(AGENT, "ask_create", decision);
     const second = await service.callTool(AGENT, "ask_create", { kind: "followup", title: "File issue for retention switch" });
-    expect(first.text).toMatch(/^A1 \[open\] decision/);
+    expect(first.text).toMatch(/^A1 \[in_progress\] decision/);
     expect(second.text).toMatch(/^A2 /);
     expect(new AskStore(dir).list(WS).map((ask) => ask.id)).toEqual(["A1", "A2"]);
   });
@@ -168,14 +168,14 @@ describe("asks", () => {
     await service.callTool(AGENT, "ask_create", { kind: "followup", title: "Second here" });
     await service.act({ workspaceId: "wks_2", id: "A2", verb: "drop" });
     expect(courier.sent.map((sent) => sent.agentId)).toEqual(["agent-2"]);
-    expect(store.get(WS, "A2")?.status).toBe("open");
+    expect(store.get(WS, "A2")?.status).toBe("in_progress");
   });
 
   it("lists only open asks by default, and only the caller's with scope mine", async () => {
     await service.callTool(AGENT, "ask_create", decision);
     await service.callTool(AGENT, "ask_create", { kind: "question", title: "Other" });
     await service.callTool(AGENT, "ask_update", { id: "A2", status: "dropped" });
-    expect((await service.callTool(AGENT, "ask_list", {})).text).toBe("A1 [open] decision: Squash-only merges?");
+    expect((await service.callTool(AGENT, "ask_list", {})).text).toBe("A1 [in_progress] decision: Squash-only merges?");
     expect((await service.callTool(AGENT, "ask_list", { status: "all" })).text.split("\n")).toHaveLength(2);
   });
 });

@@ -40,6 +40,14 @@ agent ──stdio MCP──▶ bridge.mjs ──HTTP 127.0.0.1──▶ plugin s
 - Every Drop, Done, Reply or option press confirms who heard: the agent was told now, will be told when its current turn ends, or (orphaned) nobody. Acting on an ask that is already done or dropped fails with "A2 is already dropped; nothing was changed or sent", so a second press never re-sends. Each press, applied or refused, is one line in `act-log.jsonl` in the data folder.
 - Ask ids count per workspace: "A2" in one workspace and "A2" in another are different asks with different owners.
 
+## Status follows the owner
+
+An ask is `in_progress` while the agent that raised it runs a turn, and `open` while that agent is idle. The plugin sets this itself from the agent's turn events (and re-checks every 20 s to catch missed events and plugin reloads), so agents never flip `open`/`in_progress` by hand. A new ask starts `in_progress`, because its owner is mid-turn when it creates it.
+
+The `autoStatus` flag on an ask marks an `in_progress` the plugin set, which it may set back to `open`. A human **send** action, or the owner explicitly choosing `in_progress` for work that spans turns, clears the flag, and the ask stays `in_progress` until someone changes it.
+
+Every automatic flip is one JSON line in `status-flip-log.jsonl` in the data folder (`~/.paseo/plugin-data/asks/`): `{ at, cause, workspaceId, askId, ownerAgentId, from, to }`, where `cause` is `turn_started`, `turn_ended`, `owner_call` or `reconcile`.
+
 ## Install
 
 Paseo 0.12 or newer, with plugins enabled on the daemon. `gh`, if installed in `/opt/homebrew/bin`, `/usr/local/bin` or `/usr/bin`, adds live PR status.
