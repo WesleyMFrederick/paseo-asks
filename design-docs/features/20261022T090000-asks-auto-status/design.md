@@ -27,3 +27,7 @@ If the plugin flips stored ask status from owner turn events, owner calls and a 
 **Falsify by:** after the reload, any `CosStaleAskError` notice with "the asks plugin missed setting it in progress" in the next 20 CoS checks refutes the hypothesis. Bar set before the run: 0 fires.
 
 **Risky assumption:** Paseo's agent record turns `lastStatus: running` at about the same moment `agent.turn_started` fires. If the record leads by more than the check's timing, rare false fires stay possible.
+
+## Live (2026-10-22, Wesley picked "Turn it on now")
+- Merged: plugin main 61604b2 (includes the census removal); cc-workflows main 3d2348d9 (pushed). Tests on main: plugin 47/47, cos-output 185/185. Plugin reloaded, `paseo plugin ls` says running.
+- Live check: the owner set A7 `open` mid-turn and the plugin stored `in_progress`, `autoStatus: true`. At that moment only one agent was running, and every other open ask had an idle owner, so the store matched the run state. Not yet seen: a `turn_ended` flip back to open in `status-flip-log.jsonl` (the first one comes when this tab's turn ends).
