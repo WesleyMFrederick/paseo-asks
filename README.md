@@ -34,7 +34,7 @@ agent ──stdio MCP──▶ bridge.mjs ──HTTP 127.0.0.1──▶ plugin s
 ```
 
 - Every agent created after the plugin is installed gets an `asks` MCP server with `ask_create`, `ask_update`, `ask_resolve` and `ask_list`. Its instructions tell the agent when to use them, so no `CLAUDE.md` edit is needed.
-- Agents sometimes ask in chat and skip `ask_create`. When a turn ends on a question, uses no asks tool and names no ask id, the plugin sends one `[asks]` reminder. Its answer is never reminded again, and side chats are never reminded.
+- Agents sometimes ask in chat and skip `ask_create`. When a turn ends on a question, uses no asks tool and names no ask id, the plugin sends one `[asks]` reminder. A reply that re-shows a decision card an open ask already records (the reply names a `decision-…` id found in that ask, or quotes that ask's title) is not reminded. Its answer is never reminded again, and side chats are never reminded.
 - Answers are written to an on-disk outbox first. They're sent only when the agent is between turns, because a prompt sent mid-turn interrupts it, and several answers are batched into one message. A plugin restart loses nothing.
 - If the agent that raised an ask is archived, the ask is marked *orphaned*: you can still close it, and nobody is notified.
 - Every Drop, Done, Reply or option press confirms who heard: the agent was told now, will be told when its current turn ends, or (orphaned) nobody. Acting on an ask that is already done or dropped fails with "A2 is already dropped; nothing was changed or sent", so a second press never re-sends. Each press, applied or refused, is one line in `act-log.jsonl` in the data folder.

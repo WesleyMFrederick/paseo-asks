@@ -1,4 +1,5 @@
 import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
+import type { Ask } from "../shared/asks";
 
 /** Sent once when a turn ends on a question to the human that no ask records. */
 export const NUDGE =
@@ -10,12 +11,14 @@ export const REFRESH =
 
 const ASK_TOOL = /(^|[_.])ask_(create|update|resolve|list)$/;
 const ASK_ID = /\bA\d+\b/;
+const DECISION_ID = /decision-[A-Za-z0-9_-]+/g;
+const MIN_TITLE = 12;
 
 /**
  * Whether a finished turn ended with a question to the human and never touched asks.
- * Turns that answer the nudge itself are never nudged again.
+ * Turns that answer the nudge itself, and replies an open ask already records, are never nudged.
  */
-export function shouldNudge(timeline: readonly AgentTimelineItem[]): boolean {
+export function shouldNudge(timeline: readonly AgentTimelineItem[], openAsks: readonly Ask[] = []): boolean {
   const reply: string[] = [];
   for (let index = timeline.length - 1; index >= 0; index--) {
     const item = timeline[index]!;
@@ -27,7 +30,18 @@ export function shouldNudge(timeline: readonly AgentTimelineItem[]): boolean {
     if (item.type === "assistant_message") reply.unshift(item.text);
   }
   const text = reply.join("");
-  return !ASK_ID.test(text) && endsWithQuestion(text);
+  if (ASK_ID.test(text) || !endsWithQuestion(text)) return false;
+  return !openAsks.some((ask) => recordsReply(ask, text));
+}
+
+/** An open ask records a re-shown card: its body names a decision id in the reply, or its title is quoted in the reply. */
+function recordsReply(ask: Ask, text: string): boolean {
+  if (!["open", "in_progress"].includes(ask.status)) return false;
+  const haystack = `${ask.title}\n${ask.body ?? ""}`;
+  if ((text.match(DECISION_ID) ?? []).some((id) => haystack.includes(id))) return true;
+  const squash = (s: string) => s.replace(/\s+/g, " ").trim().toLowerCase();
+  const title = squash(ask.title);
+  return title.length >= MIN_TITLE && squash(text).includes(title);
 }
 
 /** The last paragraph has a question mark outside code and links. */
