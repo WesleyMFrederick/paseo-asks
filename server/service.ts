@@ -2,6 +2,7 @@ import { z } from "zod";
 import { ACTION_KINDS, ASK_KINDS, ASK_STATUSES, OPEN_STATUSES, type Ask } from "../shared/asks";
 import { REFRESH } from "./nudge";
 import type { Delivery as OutboxDelivery, Outbox } from "./outbox";
+import type { FlipLogEntry } from "./run-status";
 import type { AskStore, NewAsk } from "./store";
 
 export const INSTRUCTIONS = `Asks are the human's list of what you need from them, shown in Paseo outside this chat, with buttons that answer you.
@@ -12,6 +13,7 @@ export const INSTRUCTIONS = `Asks are the human's list of what you need from the
 - The human may talk an ask through in a side chat; its outcome reaches you as an [asks] message like any other answer.
 - Answers arrive as messages starting with [asks]. Act on them. After finishing work a send action gave you, call ask_resolve.
 - Keep asks true: ask_update when facts change, ask_resolve or status "dropped" when the human is no longer needed. Check ask_list before creating a duplicate.
+- The plugin sets in_progress while you run and open when you are idle, so never flip open/in_progress by hand. Set in_progress only to mark work that continues across turns.
 - Your own to-do list stays in your task tool. Asks are only for things whose next move is the human's.`;
 
 const ActionInput = z.object({
@@ -54,7 +56,8 @@ export const TOOLS = [
   },
   {
     name: "ask_update",
-    description: "Change an ask you created: facts, options, links, or status (open, in_progress, done, dropped).",
+    description:
+      "Change an ask you created: facts, options, links, or status (open, in_progress, done, dropped). The plugin sets open and in_progress from your run state; set in_progress only for work that continues across turns.",
     inputSchema: z.toJSONSchema(UpdateInput, { io: "input" }),
   },
   {
@@ -100,6 +103,7 @@ export class AsksService {
     private readonly outbox: Outbox,
     private readonly workspaceOf: (agentId: string) => Promise<string | null>,
     private readonly log: (entry: ActLogEntry) => void = () => {},
+    private readonly flipLog: (entry: FlipLogEntry) => void = () => {},
   ) {}
 
   async callTool(agentId: string | null, name: string, args: unknown): Promise<ToolResult> {
@@ -114,7 +118,16 @@ export class AsksService {
           const { id, ...patch } = UpdateInput.parse(args);
           const ask = this.require(workspaceId, id);
           checkActions(patch.actions ?? []);
-          const updated = await this.store.update(workspaceId, id, patch);
+          let applied: typeof patch & { autoStatus?: boolean } = patch;
+          if (agentId === ask.ownerAgentId && (patch.status === "open" || patch.status === "in_progress")) {
+            // The owner is mid-turn, so "open" means in_progress (automatic); its own in_progress is a deliberate hold.
+            const auto = patch.status === "open";
+            applied = { ...patch, status: "in_progress", autoStatus: auto };
+          }
+          const updated = await this.store.update(workspaceId, id, applied);
+          if (applied.autoStatus && ask.status !== "in_progress") {
+            this.flipLog({ at: updated.updatedAt, cause: "owner_call", workspaceId, askId: id, ownerAgentId: ask.ownerAgentId, from: ask.status, to: "in_progress" });
+          }
           if (agentId !== ask.ownerAgentId && !ask.orphaned && patch.status && patch.status !== ask.status) {
             this.notify(ask, `[asks] ${ask.id} (${ask.title}) marked ${patch.status.replace("_", " ")} in a side chat.`);
           }
@@ -182,7 +195,7 @@ export class AsksService {
         if (!action) throw new Error(`Ask ${ask.id} has no action ${input.actionId}`);
         if (action.kind === "open") throw new Error("Open actions run on the client");
         if (action.kind === "send") {
-          next = await this.store.update(ask.workspaceId, ask.id, { status: "in_progress" });
+          next = await this.store.update(ask.workspaceId, ask.id, { status: "in_progress", autoStatus: false });
           message = `${head} "${action.label}": ${action.prompt ?? action.label}.${noted} When it is done, call ask_resolve for ${ask.id}.`;
         } else {
           const outcome = { actionId: action.id, label: action.label, note, by: "human" as const, at };
@@ -239,8 +252,11 @@ export class AsksService {
     if (input.kind === "decision" && input.actions.filter((action) => action.kind === "resolve").length < 2) {
       throw new Error('A decision needs at least two "resolve" actions, one per option');
     }
-    const ask: NewAsk = { ...input, workspaceId, ownerAgentId: agentId };
-    return this.store.create(ask);
+    // The owner is mid-turn whenever it calls a tool, so a new ask starts in_progress (automatic).
+    const ask: NewAsk = { ...input, workspaceId, ownerAgentId: agentId, status: "in_progress", autoStatus: true };
+    const created = await this.store.create(ask);
+    this.flipLog({ at: created.createdAt, cause: "owner_call", workspaceId, askId: created.id, ownerAgentId: agentId, from: "open", to: "in_progress" });
+    return created;
   }
 
   private require(workspaceId: string, id: string): Ask {

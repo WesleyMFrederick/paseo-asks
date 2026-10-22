@@ -12,8 +12,9 @@ import { listen } from "./server/listener";
 import { NUDGE, shouldNudge } from "./server/nudge";
 import { Outbox, type Courier } from "./server/outbox";
 import { dataDir } from "./server/paths";
-import { AsksService, INSTRUCTIONS, TOOLS } from "./server/service";
+import { RunStatus, type FlipLogEntry } from "./server/run-status";
 import { AskStore } from "./server/store";
+import { AsksService, INSTRUCTIONS, TOOLS } from "./server/service";
 import { PrWatcher } from "./server/watcher";
 
 const FLUSH_EVERY_MS = 20_000;
@@ -57,9 +58,13 @@ export default function contribute(server: PluginServerContext) {
   });
   // Every human action on an ask, applied or refused, one JSON line each.
   const actLog = join(dir, "act-log.jsonl");
+  // Every automatic open/in_progress flip, one JSON line each.
+  const flipLog = join(dir, "status-flip-log.jsonl");
+  const logFlip = (entry: FlipLogEntry) => appendFileSync(flipLog, `${JSON.stringify(entry)}\n`);
+  const runStatus = new RunStatus(store, logFlip);
   const service = new AsksService(store, outbox, (agentId) => agents.workspaceOf(agentId), (entry) =>
     appendFileSync(actLog, `${JSON.stringify(entry)}\n`),
-  );
+  logFlip);
   const lastOutputs = new LastOutputs(dir);
   const gh = findGh();
   if (!gh) console.error("[asks] gh not found; PR asks will show no live status");
@@ -77,9 +82,14 @@ export default function contribute(server: PluginServerContext) {
     capture(api);
     if (agent.workspaceId) agents.remember(agent.id, agent.workspaceId);
   });
-  server.on("agent.turn_ended", ({ agent, outcome, timeline }, { paseo: api }) => {
+  server.on("agent.turn_started", async ({ agent }, { paseo: api }) => {
+    capture(api);
+    await runStatus.turnStarted(agent.id).catch((error) => console.error("[asks] turn_started status flip failed", error));
+  });
+  server.on("agent.turn_ended", async ({ agent, outcome, timeline }, { paseo: api }) => {
     capture(api);
     lastOutputs.record(agent.id, timeline);
+    await runStatus.turnEnded(agent.id).catch((error) => console.error("[asks] turn_ended status flip failed", error));
     // Agents sometimes ask in chat and skip ask_create; one reminder per such turn. Side chats talk to the human directly.
     const asks = store.list(agent.workspaceId ?? undefined);
     const sideChat = asks.some((ask) => ask.discussionAgentId === agent.id);
@@ -151,6 +161,7 @@ export default function contribute(server: PluginServerContext) {
   });
   const timer = setInterval(() => {
     if (paseo && outbox.pending().length) void outbox.flush();
+    if (paseo) runStatus.reconcile(courier.state).catch((error) => console.error("[asks] status reconcile failed", error));
   }, FLUSH_EVERY_MS);
 
   const prTimer = setInterval(() => void watcher?.refresh(), PR_EVERY_MS);

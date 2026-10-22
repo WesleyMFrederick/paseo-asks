@@ -7,12 +7,13 @@ interface WorkspaceFile {
   asks: Ask[];
 }
 
-export type NewAsk = Pick<Ask, "workspaceId" | "ownerAgentId" | "kind" | "title" | "body" | "links" | "subscribe"> & {
+export type NewAsk = Pick<Ask, "workspaceId" | "ownerAgentId" | "kind" | "title" | "body" | "links" | "subscribe"> &
+  Partial<Pick<Ask, "status" | "autoStatus">> & {
   actions: Omit<Action, "id">[];
 };
 
 export type AskPatch = Partial<
-  Pick<Ask, "title" | "body" | "links" | "status" | "outcome" | "orphaned" | "ownerAgentId" | "subscribe" | "pr" | "discussionAgentId">
+  Pick<Ask, "title" | "body" | "links" | "status" | "autoStatus" | "outcome" | "orphaned" | "ownerAgentId" | "subscribe" | "pr" | "discussionAgentId">
 > & {
   actions?: Omit<Action, "id">[];
 };
@@ -44,7 +45,7 @@ export class AskStore {
         ...input,
         id: `A${file.nextId++}`,
         actions: withIds(input.actions),
-        status: "open",
+        status: input.status ?? "open",
         createdAt: at,
         updatedAt: at,
       };

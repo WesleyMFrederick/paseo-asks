@@ -50,6 +50,8 @@ export const AskSchema = z.object({
   outcome: OutcomeSchema.optional(),
   /** The owning agent is gone; nobody will hear about a resolution. */
   orphaned: z.boolean().optional(),
+  /** The plugin set in_progress because the owner is running, so it may set it back to open; a human send or the owner's explicit in_progress clears it. */
+  autoStatus: z.boolean().optional(),
   /** Tell the owner when the linked PR changes (merged, closed, checks, review). */
   subscribe: z.boolean().optional(),
   /** Live state of the first GitHub PR in links, refreshed by the plugin. */
