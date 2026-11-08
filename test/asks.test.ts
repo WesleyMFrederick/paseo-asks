@@ -178,6 +178,43 @@ describe("asks", () => {
     expect((await service.callTool(AGENT, "ask_list", {})).text).toBe("A1 [in_progress] decision: Squash-only merges?");
     expect((await service.callTool(AGENT, "ask_list", { status: "all" })).text.split("\n")).toHaveLength(2);
   });
+
+  describe("cached PR snapshot when an update changes links", () => {
+    const PR_A = "https://github.com/o/r/pull/1";
+    const PR_B = "https://github.com/o/r/pull/2";
+    const snapshot = { number: 1, url: PR_A, state: "OPEN" as const, isDraft: false, reviewDecision: null, checks: "passing" as const, mergeable: "MERGEABLE", fetchedAt: "2026-11-08T00:00:00.000Z" };
+    const withSnapshot = async () => {
+      await service.callTool(AGENT, "ask_create", { ...decision, links: [{ label: "PR", url: PR_A }] });
+      await store.update(WS, "A1", { pr: snapshot }, { touch: false });
+    };
+
+    it("Given a cached PR, When an update removes the PR link, Then the PR snapshot is gone", async () => {
+      // Given
+      await withSnapshot();
+      // When
+      await service.callTool(AGENT, "ask_update", { id: "A1", links: [] });
+      // Then
+      expect(new AskStore(dir).get(WS, "A1")?.pr).toBeUndefined();
+    });
+
+    it("Given a cached PR, When an update points the links at another PR, Then the old snapshot is gone", async () => {
+      // Given
+      await withSnapshot();
+      // When
+      await service.callTool(AGENT, "ask_update", { id: "A1", links: [{ label: "PR", url: PR_B }] });
+      // Then
+      expect(new AskStore(dir).get(WS, "A1")?.pr).toBeUndefined();
+    });
+
+    it("Given a cached PR, When an update keeps the same PR (other tab or review link), Then the snapshot stays", async () => {
+      // Given
+      await withSnapshot();
+      // When
+      await service.callTool(AGENT, "ask_update", { id: "A1", links: [{ label: "PR", url: `${PR_A}/files` }, { label: "Review", url: `${PR_A}#pullrequestreview-9` }] });
+      // Then
+      expect(new AskStore(dir).get(WS, "A1")?.pr).toEqual(snapshot);
+    });
+  });
 });
 
 describe("composer pill label", () => {

@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { prUrlOf } from "../shared/asks";
 import type { Action, Ask } from "../shared/asks";
 
 interface WorkspaceFile {
@@ -63,6 +64,8 @@ export class AskStore {
       const next: Ask = {
         ...current,
         ...patch,
+        // New links naming a different (or no) PR make the cached snapshot stale; an explicit `pr` in the patch wins.
+        ...(patch.links !== undefined && !Object.hasOwn(patch, "pr") && prUrlOf({ links: patch.links }) !== prUrlOf(current) ? { pr: undefined } : {}),
         actions: patch.actions ? withIds(patch.actions) : current.actions,
         updatedAt: touch ? this.now().toISOString() : current.updatedAt,
       };
