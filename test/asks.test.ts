@@ -5,7 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Outbox, type AgentState, type Courier } from "../server/outbox";
 import { AsksService } from "../server/service";
 import { AskStore } from "../server/store";
-import { firstExpanded, pillLabel, visibleActions, type Ask } from "../shared/asks";
+import { RunStatus, type OwnerState } from "../server/run-status";
+import { firstExpanded, latestRelays, OPEN_STATUSES, pillLabel, visibleActions, type Ask } from "../shared/asks";
 
 class FakeCourier implements Courier {
   states = new Map<string, AgentState>();
@@ -230,6 +231,23 @@ describe("asks", () => {
     expect(visibleActions(store.get(WS, "A1")!).map((action) => action.label)).toEqual(["Inspect"]);
   });
 
+  it("Given reconciliation awaits owner state, When a human sends before it resumes, Then the send stays hidden and cannot deliver twice", async () => {
+    // Given
+    await service.callTool(AGENT, "ask_create", { kind: "followup", title: "Approve", actions: [{ label: "Approve", kind: "send" }] });
+    let resume!: (state: OwnerState) => void;
+    const state = new Promise<OwnerState>((resolve) => { resume = resolve; });
+    const reconcile = new RunStatus(store, () => {}).reconcile(() => state);
+    // When
+    await service.act({ workspaceId: WS, id: "A1", verb: "action", actionId: "a1" });
+    resume("idle");
+    await reconcile;
+    // Then
+    expect(store.get(WS, "A1")).toMatchObject({ status: "in_progress", autoStatus: false });
+    expect(visibleActions(store.get(WS, "A1")!)).toEqual([]);
+    await expect(service.act({ workspaceId: WS, id: "A1", verb: "action", actionId: "a1" })).rejects.toThrow(/already sent/);
+    expect(courier.sent).toHaveLength(1);
+  });
+
   describe("relaying asks to the agent whose chat points at them", () => {
     const OTHER_WS = "wks_2";
     const T0 = "2026-11-17T10:00:00.000Z";
@@ -331,6 +349,33 @@ describe("asks", () => {
       await service.relay({ readerAgentId: AGENT, asks: [{ workspaceId: OTHER_WS, id: "A2" }] });
       // Then
       expect(firstExpanded(new AskStore(dir).list(), AGENT)).toEqual(["wks_2/A2"]);
+    });
+
+    it("Given two batches in the same millisecond, When the first new pointer resolves, Then the remaining new pointer expands instead of the older batch", async () => {
+      // Given
+      for (let i = 0; i < 3; i++) await owner.callTool("agent-2", "ask_create", decision);
+      await service.relay({ readerAgentId: AGENT, asks: [{ workspaceId: OTHER_WS, id: "A1" }] });
+      await service.relay({ readerAgentId: AGENT, asks: ["A2", "A3"].map((id) => ({ workspaceId: OTHER_WS, id })) });
+      // When
+      await owner.callTool("agent-2", "ask_resolve", { id: "A2" });
+      // Then
+      expect(firstExpanded(new AskStore(dir).list(), AGENT)).toEqual(["wks_2/A3"]);
+    });
+
+    it("Given the newest batch is fully resolved and an older relay remains open, When selecting from the open list with latest relay metadata, Then nothing expands", async () => {
+      // Given
+      for (let i = 0; i < 3; i++) await owner.callTool("agent-2", "ask_create", decision);
+      await service.relay({ readerAgentId: AGENT, asks: [{ workspaceId: OTHER_WS, id: "A1" }] });
+      await service.relay({ readerAgentId: AGENT, asks: ["A2", "A3"].map((id) => ({ workspaceId: OTHER_WS, id })) });
+      await owner.callTool("agent-2", "ask_resolve", { id: "A2" });
+      await owner.callTool("agent-2", "ask_resolve", { id: "A3" });
+      // When
+      const all = new AskStore(dir).list();
+      const open = all.filter((ask) => OPEN_STATUSES.includes(ask.status));
+      const expanded = firstExpanded(open, AGENT, latestRelays(all)[AGENT]);
+      // Then
+      expect(open.map((ask) => ask.id)).toEqual(["A1"]);
+      expect(expanded).toEqual([]);
     });
 
     it("Given one existing and one missing ask, When relay is called, Then it fails naming the missing wks_2/A9 and writes nothing", async () => {

@@ -196,6 +196,7 @@ export class AsksService {
         if (!action) throw new Error(`Ask ${ask.id} has no action ${input.actionId}`);
         if (action.kind === "open") throw new Error("Open actions run on the client");
         if (action.kind === "send") {
+          if (ask.status === "in_progress" && !ask.autoStatus) throw new Error(`${ask.id} send action was already sent; nothing was changed or sent`);
           next = await this.store.update(ask.workspaceId, ask.id, { status: "in_progress", autoStatus: false });
           message = `${head} "${action.label}": ${action.prompt ?? action.label}.${noted} When it is done, call ask_resolve for ${ask.id}.`;
         } else {

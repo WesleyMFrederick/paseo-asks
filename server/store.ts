@@ -74,6 +74,17 @@ export class AskStore {
     });
   }
 
+  /** Compare and flip inside the workspace lock; stale owner-state reads must not undo human actions. */
+  flipStatus(expected: Ask, status: Ask["status"], autoStatus: boolean): Promise<boolean> {
+    return this.mutate(expected.workspaceId, (file) => {
+      const current = file.asks.find((ask) => ask.id === expected.id);
+      if (!current || current.status !== expected.status || current.autoStatus !== expected.autoStatus || current.ownerAgentId !== expected.ownerAgentId) return false;
+      current.status = status;
+      current.autoStatus = autoStatus;
+      return true;
+    });
+  }
+
   /** Validate every target and merge stamps under all affected workspace locks; no target is written on refusal. */
   relay(readerAgentId: string, targets: readonly Pick<Ask, "workspaceId" | "id">[], at: number, batch: string): Promise<void> {
     return this.mutateWorkspaces([...new Set(targets.map((target) => target.workspaceId))], (files) => {
@@ -90,7 +101,7 @@ export class AskStore {
       asks.forEach((ask, index) => {
         ask!.relayedTo = [
           ...(ask!.relayedTo?.filter((entry) => entry.agentId !== readerAgentId) ?? []),
-          { agentId: readerAgentId, at: new Date(newest - index).toISOString(), batch },
+          { agentId: readerAgentId, at: new Date(newest).toISOString(), batch, index },
         ];
       });
     });

@@ -52,7 +52,7 @@ export class RunStatus {
   }
 
   private async flip(ask: Ask, to: Ask["status"], autoStatus: boolean, cause: FlipLogEntry["cause"]): Promise<void> {
-    await this.store.update(ask.workspaceId, ask.id, { status: to, autoStatus }, { touch: false });
+    if (!await this.store.flipStatus(ask, to, autoStatus)) return;
     this.log({ at: new Date().toISOString(), cause, workspaceId: ask.workspaceId, askId: ask.id, ownerAgentId: ask.ownerAgentId, from: ask.status, to });
   }
 }

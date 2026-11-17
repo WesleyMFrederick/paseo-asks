@@ -128,7 +128,7 @@ export function AgentAsks(props: { theme: PluginTheme; compact: boolean; workspa
   if (asks.isPending) return <Message styles={styles} text="Loading asks…" />;
   if (asks.isError) return <Message styles={styles} text={`Could not load asks: ${asks.error.message}`} danger />;
   const readable = readerAsks(asks.data.asks, agentId);
-  const expanded = firstExpanded(readable, agentId);
+  const expanded = firstExpanded(readable, agentId, asks.data.latestRelays?.[agentId]);
   // The newest relay's asks lead their section, in pointer order, so an opened card never sits below the chat's own asks.
   const listed = [
     ...expanded.flatMap((key) => readable.filter((ask) => `${ask.workspaceId}/${ask.id}` === key)),

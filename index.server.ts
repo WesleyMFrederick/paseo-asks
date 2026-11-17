@@ -2,7 +2,7 @@ import { appendFileSync } from "node:fs";
 import { join } from "node:path";
 import type { PaseoApi } from "@getpaseo/client";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
-import { actOnAsk, discussAsk, listAsks, OPEN_STATUSES, refreshAsks, RelayInputSchema } from "./shared/asks";
+import { actOnAsk, discussAsk, latestRelays, listAsks, OPEN_STATUSES, refreshAsks, RelayInputSchema } from "./shared/asks";
 import { AgentDirectory } from "./server/agents";
 import { installBridge } from "./server/bridge";
 import { discuss } from "./server/discuss";
@@ -112,12 +112,14 @@ export default function contribute(server: PluginServerContext) {
 
   server.handle(listAsks, async ({ workspaceId, includeClosed }, { paseo: api }) => {
     capture(api);
-    const asks = store.list(workspaceId).filter((ask) => includeClosed || OPEN_STATUSES.includes(ask.status));
+    const all = store.list(workspaceId);
+    const latest = latestRelays(all);
+    const asks = all.filter((ask) => includeClosed || OPEN_STATUSES.includes(ask.status));
     asks.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-    if (workspaceId) return { asks };
+    if (workspaceId) return { asks, latestRelays: latest };
     // The global screen has no workspace context, so client state hooks can't resolve names there.
     const { entries } = await api.workspaces.list({ page: { limit: 200 } }).catch(() => ({ entries: [] }));
-    return { asks, workspaceNames: Object.fromEntries(entries.map((w) => [w.id, w.name])) };
+    return { asks, latestRelays: latest, workspaceNames: Object.fromEntries(entries.map((w) => [w.id, w.name])) };
   });
   server.handle(actOnAsk, (input, { paseo: api }) => {
     capture(api);

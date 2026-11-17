@@ -37,6 +37,14 @@ export const PrStateSchema = z.object({
 });
 export type PrState = z.infer<typeof PrStateSchema>;
 
+const RelayStampSchema = z.object({
+  agentId: z.string(),
+  at: z.string(),
+  batch: z.string().optional(),
+  index: z.number().int().nonnegative().optional(),
+});
+type RelayStamp = z.infer<typeof RelayStampSchema>;
+
 export const AskSchema = z.object({
   id: z.string(),
   workspaceId: z.string(),
@@ -59,7 +67,7 @@ export const AskSchema = z.object({
   /** The side chat opened to talk this ask through. */
   discussionAgentId: z.string().optional(),
   /** Agents whose chat pointed at this ask; one latest entry per reader, with a shared identity for each relay request. */
-  relayedTo: z.array(z.object({ agentId: z.string(), at: z.string(), batch: z.string().optional() })).optional(),
+  relayedTo: z.array(RelayStampSchema).optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
@@ -86,17 +94,25 @@ export function pillLabel(asks: readonly Pick<Ask, "ownerAgentId" | "status" | "
   return parts.length ? `Asks · ${parts.join(" · ")}` : "No asks";
 }
 
+/** Latest relay per reader, including closed asks so completing a batch never reopens an older one. */
+export function latestRelays(asks: readonly Pick<Ask, "relayedTo">[]): Record<string, RelayStamp> {
+  return asks.flatMap((ask) => ask.relayedTo ?? []).reduce<Record<string, RelayStamp>>((latest, entry) => {
+    if (!latest[entry.agentId] || entry.at > latest[entry.agentId]!.at) latest[entry.agentId] = entry;
+    return latest;
+  }, {});
+}
+
 /**
  * Keys (`workspaceId/id`) of the popover rows that start expanded: the still-open (open or in-progress) asks of the
  * newest relay to this agent, newest first, which is the order the reply pointed at them. Empty when none.
  */
-export function firstExpanded(asks: readonly Pick<Ask, "workspaceId" | "id" | "status" | "orphaned" | "relayedTo">[], agentId: string): string[] {
+export function firstExpanded(asks: readonly Pick<Ask, "workspaceId" | "id" | "status" | "orphaned" | "relayedTo">[], agentId: string, latest?: RelayStamp): string[] {
   const relayed = asks.flatMap((ask) => {
     const entry = ask.relayedTo?.find((entry) => entry.agentId === agentId);
     const key = `${ask.workspaceId}/${ask.id}`;
-    return entry ? [{ key, at: Date.parse(entry.at), batch: entry.batch, eligible: !ask.orphaned && OPEN_STATUSES.includes(ask.status) }] : [];
-  }).sort((a, b) => b.at - a.at);
-  const newest = relayed[0];
+    return entry ? [{ key, at: Date.parse(entry.at), batch: entry.batch, index: entry.index, eligible: !ask.orphaned && OPEN_STATUSES.includes(ask.status) }] : [];
+  }).sort((a, b) => b.at - a.at || (a.index ?? 0) - (b.index ?? 0));
+  const newest = latest ? (latest.batch !== undefined ? latest : relayed.find((entry) => entry.at === Date.parse(latest.at))) : relayed[0];
   return relayed
     .filter((entry) => entry.eligible && (newest?.batch !== undefined ? entry.batch === newest.batch : entry === newest))
     .map((entry) => entry.key);
@@ -113,6 +129,7 @@ export const listAsks = defineRpc({
   input: z.object({ workspaceId: z.string().optional(), includeClosed: z.boolean().optional() }),
   output: z.object({
     asks: z.array(AskSchema),
+    latestRelays: z.record(z.string(), RelayStampSchema).optional(),
     /** Workspace id → display name, filled when listing every workspace. */
     workspaceNames: z.record(z.string(), z.string()).optional(),
   }),
