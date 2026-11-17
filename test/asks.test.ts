@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Outbox, type AgentState, type Courier } from "../server/outbox";
 import { AsksService } from "../server/service";
 import { AskStore } from "../server/store";
-import { firstExpanded, pillLabel, type Ask } from "../shared/asks";
+import { firstExpanded, pillLabel, visibleActions, type Ask } from "../shared/asks";
 
 class FakeCourier implements Courier {
   states = new Map<string, AgentState>();
@@ -216,6 +216,20 @@ describe("asks", () => {
     });
   });
 
+  it("Given an automatically in-progress ask, When its send action is used, Then unsent actions were visible and sent actions are hidden", async () => {
+    // Given
+    await service.callTool(AGENT, "ask_create", {
+      kind: "followup", title: "Approve follow-up",
+      actions: [{ label: "Approve", kind: "send" }, { label: "Inspect", kind: "open", url: "https://example.com" }],
+    });
+    const before = visibleActions(store.get(WS, "A1")!).map((action) => action.label);
+    // When
+    await service.act({ workspaceId: WS, id: "A1", verb: "action", actionId: "a1" });
+    // Then
+    expect(before).toEqual(["Approve", "Inspect"]);
+    expect(visibleActions(store.get(WS, "A1")!).map((action) => action.label)).toEqual(["Inspect"]);
+  });
+
   describe("relaying asks to the agent whose chat points at them", () => {
     const OTHER_WS = "wks_2";
     const T0 = "2026-11-17T10:00:00.000Z";
@@ -239,7 +253,7 @@ describe("asks", () => {
       // Then
       const stored = new AskStore(dir).get(OTHER_WS, "A1");
       expect(result).toEqual({ relayed: [{ workspaceId: OTHER_WS, id: "A1" }] });
-      expect(stored?.relayedTo).toEqual([{ agentId: AGENT, at: T1 }]);
+      expect(stored?.relayedTo).toMatchObject([{ agentId: AGENT, at: T1 }]);
       expect(stored?.updatedAt).toBe(T0);
     });
 
@@ -253,8 +267,70 @@ describe("asks", () => {
       await service.relay({ readerAgentId: AGENT, asks: [{ workspaceId: OTHER_WS, id: "A1" }] });
       // Then
       const relayedTo = new AskStore(dir).get(OTHER_WS, "A1")?.relayedTo ?? [];
-      expect(relayedTo.filter((entry) => entry.agentId === AGENT)).toEqual([{ agentId: AGENT, at: T1 }]);
-      expect(relayedTo.filter((entry) => entry.agentId === "cos-2")).toEqual([{ agentId: "cos-2", at: T0 }]);
+      expect(relayedTo.filter((entry) => entry.agentId === AGENT)).toMatchObject([{ agentId: AGENT, at: T1 }]);
+      expect(relayedTo.filter((entry) => entry.agentId === "cos-2")).toMatchObject([{ agentId: "cos-2", at: T0 }]);
+    });
+
+    it("Given targets become ineligible before the lock runs, When relayed across workspaces, Then all stamps are refused", async () => {
+      // Given
+      await service.callTool(AGENT, "ask_create", decision);
+      for (let i = 0; i < 3; i++) await owner.callTool("agent-2", "ask_create", decision);
+      const changes = [
+        store.update(OTHER_WS, "A1", { status: "done" }),
+        store.update(OTHER_WS, "A2", { orphaned: true }),
+        store.update(OTHER_WS, "A3", { status: "dropped" }),
+      ];
+      // When
+      const relay = service.relay({ readerAgentId: AGENT, asks: [
+        { workspaceId: WS, id: "A1" },
+        ...["A1", "A2", "A3"].map((id) => ({ workspaceId: OTHER_WS, id })),
+      ] });
+      // Then
+      await expect(relay).rejects.toThrow(/wks_2\/A1.*wks_2\/A2.*wks_2\/A3/);
+      await Promise.all(changes);
+      expect(new AskStore(dir).list().every((ask) => ask.relayedTo === undefined)).toBe(true);
+    });
+
+    it("Given two readers relay the same ask concurrently, When both complete, Then both persisted reader stamps remain", async () => {
+      // Given
+      await owner.callTool("agent-2", "ask_create", decision);
+      const asks = [{ workspaceId: OTHER_WS, id: "A1" }];
+      // When
+      await Promise.all(["reader-one", "reader-two"].map((readerAgentId) => service.relay({ readerAgentId, asks })));
+      // Then
+      expect(new AskStore(dir).get(OTHER_WS, "A1")?.relayedTo?.map((entry) => entry.agentId).sort()).toEqual(["reader-one", "reader-two"]);
+    });
+
+    it("Given two relay requests four seconds apart, When selecting expanded rows, Then only the second batch expands in pointer order", async () => {
+      // Given
+      for (let i = 0; i < 3; i++) await owner.callTool("agent-2", "ask_create", decision);
+      await service.relay({ readerAgentId: AGENT, asks: [{ workspaceId: OTHER_WS, id: "A1" }] });
+      vi.setSystemTime(new Date(Date.parse(T0) + 4000));
+      // When
+      await service.relay({ readerAgentId: AGENT, asks: ["A3", "A2"].map((id) => ({ workspaceId: OTHER_WS, id })) });
+      // Then
+      expect(firstExpanded(new AskStore(dir).list(), AGENT)).toEqual(["wks_2/A3", "wks_2/A2"]);
+    });
+
+    it("Given legacy relay entries without batch identities, When expanded rows are selected, Then only the newest legacy ask expands", async () => {
+      // Given
+      for (let i = 0; i < 2; i++) await owner.callTool("agent-2", "ask_create", decision);
+      await store.update(OTHER_WS, "A1", { relayedTo: [{ agentId: AGENT, at: T0 }] });
+      await store.update(OTHER_WS, "A2", { relayedTo: [{ agentId: AGENT, at: new Date(Date.parse(T0) + 1000).toISOString() }] });
+      // When
+      const expanded = firstExpanded(new AskStore(dir).list(), AGENT);
+      // Then
+      expect(expanded).toEqual(["wks_2/A2"]);
+    });
+
+    it("Given two requests in the same millisecond, When selecting expanded rows, Then the later request alone expands", async () => {
+      // Given
+      for (let i = 0; i < 2; i++) await owner.callTool("agent-2", "ask_create", decision);
+      await service.relay({ readerAgentId: AGENT, asks: [{ workspaceId: OTHER_WS, id: "A1" }] });
+      // When
+      await service.relay({ readerAgentId: AGENT, asks: [{ workspaceId: OTHER_WS, id: "A2" }] });
+      // Then
+      expect(firstExpanded(new AskStore(dir).list(), AGENT)).toEqual(["wks_2/A2"]);
     });
 
     it("Given one existing and one missing ask, When relay is called, Then it fails naming the missing wks_2/A9 and writes nothing", async () => {
@@ -278,7 +354,7 @@ describe("asks", () => {
       });
       // Then
       expect(result).toEqual({ relayed: [{ workspaceId: OTHER_WS, id: "A1" }, { workspaceId: OTHER_WS, id: "A2" }] });
-      expect(store.get(OTHER_WS, "A1")?.relayedTo).toEqual([{ agentId: AGENT, at: T1 }]);
+      expect(store.get(OTHER_WS, "A1")?.relayedTo).toMatchObject([{ agentId: AGENT, at: T1 }]);
       expect(firstExpanded(store.list(), AGENT)).toEqual(["wks_2/A1", "wks_2/A2"]);
     });
 

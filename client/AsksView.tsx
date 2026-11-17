@@ -4,7 +4,7 @@ import { Icon, ScrollView, TextInput, useToast } from "@getpaseo/plugin/client/r
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { Pressable, Text, View } from "react-native";
-import { actOnAsk, discussAsk, firstExpanded, listAsks, readerAsks, refreshAsks, type Action, type Ask, type PrState } from "../shared/asks";
+import { actOnAsk, discussAsk, firstExpanded, listAsks, readerAsks, refreshAsks, visibleActions, type Action, type Ask, type PrState } from "../shared/asks";
 import { Markdown, openLink } from "./Markdown";
 
 export const POLL_MS = 4000;
@@ -236,8 +236,7 @@ function AskDetail({
     if (action.kind === "open" && action.url) return openLink(action.url);
     mutation.mutate({ verb: "action", actionId: action.id });
   };
-  // In progress, a send already went out; its options to close or open stay available.
-  const actions = ask.actions.filter((action) => ask.status === "open" || action.kind !== "send");
+  const actions = visibleActions(ask);
 
   return (
     <View style={styles.detail}>

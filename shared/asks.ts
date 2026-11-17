@@ -58,14 +58,19 @@ export const AskSchema = z.object({
   pr: PrStateSchema.optional(),
   /** The side chat opened to talk this ask through. */
   discussionAgentId: z.string().optional(),
-  /** Agents whose chat pointed at this ask, one entry per agent with the latest time; their composer pill lists it. */
-  relayedTo: z.array(z.object({ agentId: z.string(), at: z.string() })).optional(),
+  /** Agents whose chat pointed at this ask; one latest entry per reader, with a shared identity for each relay request. */
+  relayedTo: z.array(z.object({ agentId: z.string(), at: z.string(), batch: z.string().optional() })).optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
 export type Ask = z.infer<typeof AskSchema>;
 
 export const OPEN_STATUSES: readonly Ask["status"][] = ["open", "in_progress"];
+
+/** Actions available in an expanded ask card. */
+export function visibleActions(ask: Pick<Ask, "status" | "autoStatus" | "actions">): Action[] {
+  return ask.actions.filter((action) => ask.status === "open" || (ask.status === "in_progress" && ask.autoStatus === true) || action.kind !== "send");
+}
 
 /** The asks an agent's composer pill counts and its popover lists: the ones it owns plus the ones relayed to it. */
 export function readerAsks<T extends Pick<Ask, "ownerAgentId" | "relayedTo">>(asks: readonly T[], agentId: string): T[] {
@@ -81,22 +86,19 @@ export function pillLabel(asks: readonly Pick<Ask, "ownerAgentId" | "status" | "
   return parts.length ? `Asks · ${parts.join(" · ")}` : "No asks";
 }
 
-/** Relays this close to the newest one came from the same reply. */
-const RELAY_BATCH_MS = 5000;
-
 /**
  * Keys (`workspaceId/id`) of the popover rows that start expanded: the still-open (open or in-progress) asks of the
  * newest relay to this agent, newest first, which is the order the reply pointed at them. Empty when none.
  */
-export function firstExpanded(asks: readonly Pick<Ask, "workspaceId" | "id" | "status" | "relayedTo">[], agentId: string): string[] {
+export function firstExpanded(asks: readonly Pick<Ask, "workspaceId" | "id" | "status" | "orphaned" | "relayedTo">[], agentId: string): string[] {
   const relayed = asks.flatMap((ask) => {
-    const at = ask.relayedTo?.find((entry) => entry.agentId === agentId)?.at;
-    return at && OPEN_STATUSES.includes(ask.status) ? [{ key: `${ask.workspaceId}/${ask.id}`, at: Date.parse(at) }] : [];
-  });
-  const newest = Math.max(...relayed.map((entry) => entry.at));
+    const entry = ask.relayedTo?.find((entry) => entry.agentId === agentId);
+    const key = `${ask.workspaceId}/${ask.id}`;
+    return entry ? [{ key, at: Date.parse(entry.at), batch: entry.batch, eligible: !ask.orphaned && OPEN_STATUSES.includes(ask.status) }] : [];
+  }).sort((a, b) => b.at - a.at);
+  const newest = relayed[0];
   return relayed
-    .filter((entry) => newest - entry.at <= RELAY_BATCH_MS)
-    .sort((a, b) => b.at - a.at)
+    .filter((entry) => entry.eligible && (newest?.batch !== undefined ? entry.batch === newest.batch : entry === newest))
     .map((entry) => entry.key);
 }
 

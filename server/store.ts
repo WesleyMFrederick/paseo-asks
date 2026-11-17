@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { prUrlOf } from "../shared/asks";
+import { OPEN_STATUSES, prUrlOf } from "../shared/asks";
 import type { Action, Ask } from "../shared/asks";
 
 interface WorkspaceFile {
@@ -74,6 +74,28 @@ export class AskStore {
     });
   }
 
+  /** Validate every target and merge stamps under all affected workspace locks; no target is written on refusal. */
+  relay(readerAgentId: string, targets: readonly Pick<Ask, "workspaceId" | "id">[], at: number, batch: string): Promise<void> {
+    return this.mutateWorkspaces([...new Set(targets.map((target) => target.workspaceId))], (files) => {
+      const asks = targets.map(({ workspaceId, id }) => files.get(workspaceId)!.asks.find((ask) => ask.id === id));
+      const missing = targets.filter((_, index) => !asks[index]).map(({ workspaceId, id }) => `${workspaceId}/${id}`);
+      if (missing.length) throw new Error(`No ask ${missing.join(", ")}; nothing was relayed`);
+      const ineligible = asks.filter((ask) => ask!.orphaned || !OPEN_STATUSES.includes(ask!.status));
+      if (ineligible.length) throw new Error(`Ineligible asks ${ineligible.map((ask) => `${ask!.workspaceId}/${ask!.id}`).join(", ")}; nothing was relayed`);
+      // Requests in the same millisecond still have an unambiguous newest batch.
+      const newest = this.list().reduce((latest, ask) => {
+        const entry = ask.relayedTo?.find((entry) => entry.agentId === readerAgentId);
+        return entry ? Math.max(latest, Date.parse(entry.at) + 1) : latest;
+      }, at);
+      asks.forEach((ask, index) => {
+        ask!.relayedTo = [
+          ...(ask!.relayedTo?.filter((entry) => entry.agentId !== readerAgentId) ?? []),
+          { agentId: readerAgentId, at: new Date(newest - index).toISOString(), batch },
+        ];
+      });
+    });
+  }
+
   private workspaceIds(): string[] {
     return readdirSync(this.dir)
       .filter((name) => name.endsWith(".json"))
@@ -94,17 +116,23 @@ export class AskStore {
   }
 
   private mutate<T>(workspaceId: string, change: (file: WorkspaceFile) => T): Promise<T> {
-    const run = async () => {
-      const draft: WorkspaceFile = structuredClone(this.read(workspaceId));
-      const result = change(draft);
-      const path = this.path(workspaceId);
-      writeFileSync(`${path}.tmp`, JSON.stringify(draft, null, 2));
-      renameSync(`${path}.tmp`, path);
-      this.cache.set(workspaceId, draft);
+    return this.mutateWorkspaces([workspaceId], (files) => change(files.get(workspaceId)!));
+  }
+
+  private mutateWorkspaces<T>(workspaceIds: readonly string[], change: (files: Map<string, WorkspaceFile>) => T): Promise<T> {
+    const run = () => {
+      const drafts = new Map(workspaceIds.map((id) => [id, structuredClone(this.read(id))]));
+      const result = change(drafts);
+      for (const [id, draft] of drafts) {
+        const path = this.path(id);
+        writeFileSync(`${path}.tmp`, JSON.stringify(draft, null, 2));
+        renameSync(`${path}.tmp`, path);
+        this.cache.set(id, draft);
+      }
       return result;
     };
-    const next = (this.locks.get(workspaceId) ?? Promise.resolve()).then(run, run);
-    this.locks.set(workspaceId, next.catch(() => undefined));
+    const next = Promise.all(workspaceIds.map((id) => this.locks.get(id))).then(run);
+    for (const id of workspaceIds) this.locks.set(id, next.catch(() => undefined));
     return next;
   }
 }
