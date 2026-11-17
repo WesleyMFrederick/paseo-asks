@@ -2,7 +2,7 @@ import { appendFileSync } from "node:fs";
 import { join } from "node:path";
 import type { PaseoApi } from "@getpaseo/client";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
-import { actOnAsk, discussAsk, listAsks, OPEN_STATUSES, refreshAsks } from "./shared/asks";
+import { actOnAsk, discussAsk, listAsks, OPEN_STATUSES, refreshAsks, RelayInputSchema } from "./shared/asks";
 import { AgentDirectory } from "./server/agents";
 import { installBridge } from "./server/bridge";
 import { discuss } from "./server/discuss";
@@ -152,6 +152,8 @@ export default function contribute(server: PluginServerContext) {
       const { workspaceId, id } = discussAsk.input.parse(input);
       return startDiscussion(requirePaseo(), workspaceId, id);
     },
+    // The harness, at turn end: the asks a reply's pointer lines named, so the reader's pill lists them.
+    "/relay": async (input) => service.relay(RelayInputSchema.parse(input)),
   });
   const timer = setInterval(() => {
     if (paseo && outbox.pending().length) void outbox.flush();

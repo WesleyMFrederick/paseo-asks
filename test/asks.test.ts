@@ -1,11 +1,11 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Outbox, type AgentState, type Courier } from "../server/outbox";
 import { AsksService } from "../server/service";
 import { AskStore } from "../server/store";
-import { pillLabel, type Ask } from "../shared/asks";
+import { firstExpanded, pillLabel, type Ask } from "../shared/asks";
 
 class FakeCourier implements Courier {
   states = new Map<string, AgentState>();
@@ -215,6 +215,96 @@ describe("asks", () => {
       expect(new AskStore(dir).get(WS, "A1")?.pr).toEqual(snapshot);
     });
   });
+
+  describe("relaying asks to the agent whose chat points at them", () => {
+    const OTHER_WS = "wks_2";
+    const T0 = "2026-11-17T10:00:00.000Z";
+    const T1 = "2026-11-17T10:05:00.000Z";
+    let owner: AsksService;
+
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ["Date"], now: new Date(T0) });
+      owner = new AsksService(store, outbox, async () => OTHER_WS);
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("Given an ask in wks_2 owned by someone else, When relay is called for agent-1, Then the ask records one relay to agent-1 and its updatedAt is unchanged", async () => {
+      // Given
+      await owner.callTool("agent-2", "ask_create", decision);
+      vi.setSystemTime(new Date(T1));
+      // When
+      const result = await service.relay({ readerAgentId: AGENT, asks: [{ workspaceId: OTHER_WS, id: "A1" }] });
+      // Then
+      const stored = new AskStore(dir).get(OTHER_WS, "A1");
+      expect(result).toEqual({ relayed: [{ workspaceId: OTHER_WS, id: "A1" }] });
+      expect(stored?.relayedTo).toEqual([{ agentId: AGENT, at: T1 }]);
+      expect(stored?.updatedAt).toBe(T0);
+    });
+
+    it("Given an ask already relayed to agent-1 and to another reader, When it is relayed to agent-1 again, Then agent-1 still has one entry, with the newer time, and the other reader keeps its own", async () => {
+      // Given
+      await owner.callTool("agent-2", "ask_create", decision);
+      await service.relay({ readerAgentId: AGENT, asks: [{ workspaceId: OTHER_WS, id: "A1" }] });
+      await service.relay({ readerAgentId: "cos-2", asks: [{ workspaceId: OTHER_WS, id: "A1" }] });
+      vi.setSystemTime(new Date(T1));
+      // When
+      await service.relay({ readerAgentId: AGENT, asks: [{ workspaceId: OTHER_WS, id: "A1" }] });
+      // Then
+      const relayedTo = new AskStore(dir).get(OTHER_WS, "A1")?.relayedTo ?? [];
+      expect(relayedTo.filter((entry) => entry.agentId === AGENT)).toEqual([{ agentId: AGENT, at: T1 }]);
+      expect(relayedTo.filter((entry) => entry.agentId === "cos-2")).toEqual([{ agentId: "cos-2", at: T0 }]);
+    });
+
+    it("Given one existing and one missing ask, When relay is called, Then it fails naming the missing wks_2/A9 and writes nothing", async () => {
+      // Given
+      await owner.callTool("agent-2", "ask_create", decision);
+      // When
+      const relay = service.relay({ readerAgentId: AGENT, asks: [{ workspaceId: OTHER_WS, id: "A1" }, { workspaceId: OTHER_WS, id: "A9" }] });
+      // Then
+      await expect(relay).rejects.toThrow("wks_2/A9");
+      expect(new AskStore(dir).get(OTHER_WS, "A1")?.relayedTo).toBeUndefined();
+    });
+
+    it("Given a payload that names one ask twice, When relay is called, Then the ask is relayed once and ranked by its first pointer", async () => {
+      // Given
+      for (const title of ["First pointer", "Second pointer"]) await owner.callTool("agent-2", "ask_create", { kind: "question", title });
+      vi.setSystemTime(new Date(T1));
+      // When
+      const result = await service.relay({
+        readerAgentId: AGENT,
+        asks: [{ workspaceId: OTHER_WS, id: "A1" }, { workspaceId: OTHER_WS, id: "A2" }, { workspaceId: OTHER_WS, id: "A1" }],
+      });
+      // Then
+      expect(result).toEqual({ relayed: [{ workspaceId: OTHER_WS, id: "A1" }, { workspaceId: OTHER_WS, id: "A2" }] });
+      expect(store.get(OTHER_WS, "A1")?.relayedTo).toEqual([{ agentId: AGENT, at: T1 }]);
+      expect(firstExpanded(store.list(), AGENT)).toEqual(["wks_2/A1", "wks_2/A2"]);
+    });
+
+    it("Given two asks relayed in one request and an older relay from an earlier request, When the reader's expanded rows are picked, Then they are the two new asks, first-pointed first, and not the old one", async () => {
+      // Given
+      for (const title of ["Old pointer", "Second pointer", "First pointer"]) await owner.callTool("agent-2", "ask_create", { kind: "question", title });
+      await service.relay({ readerAgentId: AGENT, asks: [{ workspaceId: OTHER_WS, id: "A1" }] });
+      vi.setSystemTime(new Date(T1));
+      await service.relay({ readerAgentId: AGENT, asks: [{ workspaceId: OTHER_WS, id: "A3" }, { workspaceId: OTHER_WS, id: "A2" }] });
+      // When
+      const expanded = firstExpanded(store.list(), AGENT);
+      // Then
+      expect(expanded).toEqual(["wks_2/A3", "wks_2/A2"]);
+    });
+
+    it("Given the only ask relayed to agent-1 is done, When the reader's expanded rows are picked, Then there are none", async () => {
+      // Given
+      await owner.callTool("agent-2", "ask_create", { kind: "question", title: "Which region?" });
+      await service.relay({ readerAgentId: AGENT, asks: [{ workspaceId: OTHER_WS, id: "A1" }] });
+      await owner.callTool("agent-2", "ask_resolve", { id: "A1" });
+      // When
+      const expanded = firstExpanded(store.list(), AGENT);
+      // Then
+      expect(expanded).toEqual([]);
+    });
+  });
 });
 
 describe("composer pill label", () => {
@@ -225,5 +315,15 @@ describe("composer pill label", () => {
     expect(pillLabel([ask(AGENT, "in_progress")], AGENT)).toBe("Asks · 1 in progress");
     expect(pillLabel([ask(AGENT, "open"), ask(AGENT, "open"), ask(AGENT, "in_progress")], AGENT)).toBe("Asks · 2 · 1 in progress");
     expect(pillLabel([ask("someone-else", "open"), ask(AGENT, "done"), ask(AGENT, "dropped")], AGENT)).toBe("No asks");
+  });
+
+  it("Given owned and relayed open asks plus a relayed done ask, When the label is built, Then it counts owned and relayed open or in-progress asks and ignores the done one", () => {
+    // Given
+    const relayed = (status: Ask["status"], agentId = AGENT) => ({ ownerAgentId: "someone-else", status, relayedTo: [{ agentId, at: "2026-11-17T10:00:00.000Z" }] });
+    const asks = [ask(AGENT, "open"), relayed("open"), relayed("in_progress"), relayed("done"), relayed("open", "cos-2")];
+    // When
+    const label = pillLabel(asks, AGENT);
+    // Then
+    expect(label).toBe("Asks · 2 · 1 in progress");
   });
 });

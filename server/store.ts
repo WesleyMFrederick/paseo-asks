@@ -14,7 +14,7 @@ export type NewAsk = Pick<Ask, "workspaceId" | "ownerAgentId" | "kind" | "title"
 };
 
 export type AskPatch = Partial<
-  Pick<Ask, "title" | "body" | "links" | "status" | "autoStatus" | "outcome" | "orphaned" | "ownerAgentId" | "subscribe" | "pr" | "discussionAgentId">
+  Pick<Ask, "title" | "body" | "links" | "status" | "autoStatus" | "outcome" | "orphaned" | "ownerAgentId" | "subscribe" | "pr" | "discussionAgentId" | "relayedTo">
 > & {
   actions?: Omit<Action, "id">[];
 };
@@ -55,7 +55,7 @@ export class AskStore {
     });
   }
 
-  /** `touch: false` for bookkeeping (a PR snapshot) that should not count as the ask changing. */
+  /** `touch: false` for bookkeeping (a PR snapshot, a relay) that should not count as the ask changing. */
   update(workspaceId: string, id: string, patch: AskPatch, { touch = true } = {}): Promise<Ask> {
     return this.mutate(workspaceId, (file) => {
       const index = file.asks.findIndex((ask) => ask.id === id);

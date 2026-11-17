@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { ACTION_KINDS, ASK_KINDS, ASK_STATUSES, OPEN_STATUSES, type Ask } from "../shared/asks";
+import { ACTION_KINDS, ASK_KINDS, ASK_STATUSES, OPEN_STATUSES, type Ask, type RelayInputSchema } from "../shared/asks";
 import { REFRESH } from "./nudge";
 import type { Delivery as OutboxDelivery, Outbox } from "./outbox";
 import type { FlipLogEntry } from "./run-status";
@@ -245,6 +245,25 @@ export class AsksService {
     this.message(agentId, workspaceId, REFRESH);
     await this.outbox.flush(agentId);
     return { sent: this.outbox.pending(agentId).length === 0 };
+  }
+
+  /**
+   * The harness saw a reply in readerAgentId's chat point at these asks: mark each relayed to that agent, so its pill
+   * lists them. An ask named twice counts once, at its first pointer. Every ask must exist, or it throws naming the
+   * missing ones and writes nothing. The first ask gets the latest time, so pointer order is recency order. A repeat
+   * relay replaces the agent's entry; updatedAt stays.
+   */
+  async relay({ readerAgentId, asks }: z.output<typeof RelayInputSchema>): Promise<{ relayed: Pick<Ask, "workspaceId" | "id">[] }> {
+    const unique = asks.filter((ask, index) => asks.findIndex((other) => other.workspaceId === ask.workspaceId && other.id === ask.id) === index);
+    const missing = unique.filter(({ workspaceId, id }) => !this.store.get(workspaceId, id)).map(({ workspaceId, id }) => `${workspaceId}/${id}`);
+    if (missing.length) throw new Error(`No ask ${missing.join(", ")}; nothing was relayed`);
+    const now = Date.now();
+    for (const [index, { workspaceId, id }] of unique.entries()) {
+      const others = this.store.get(workspaceId, id)?.relayedTo?.filter((entry) => entry.agentId !== readerAgentId) ?? [];
+      const relayedTo = [...others, { agentId: readerAgentId, at: new Date(now - index).toISOString() }];
+      await this.store.update(workspaceId, id, { relayedTo }, { touch: false });
+    }
+    return { relayed: unique.map(({ workspaceId, id }) => ({ workspaceId, id })) };
   }
 
   private async create(workspaceId: string, agentId: string, input: z.output<typeof CreateInput>): Promise<Ask> {

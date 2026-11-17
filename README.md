@@ -23,6 +23,7 @@ PR asks show live status from `gh`: open, merged or closed, checks, review decis
 - an **Asks** panel in each workspace (also in ⌘K: "Open asks for this workspace");
 - an **Asks** screen in the sidebar, covering every workspace, with a count of what's waiting;
 - an **Asks · n** (or **No asks**) pill in every agent's composer. It counts the same asks its popover lists, so in-progress ones show as **Asks · 1 in progress**, never as **No asks**. Pressing it shows that agent's asks in the same collapsed list as the sidebar (tap one to open it), with a **Refresh asks** button that tells the agent to bring them up to date: create asks it skipped, and update or resolve stale ones. Paseo caps plugin popovers at 420 wide, so on wide layouts an **Open wide** button opens the Asks panel beside the chat. Phones get Paseo's bottom sheet instead.
+  The pill also counts and lists asks *relayed* to the agent: asks other agents own, from any workspace, that its replies pointed at (a Chief of Staff's "→ Open … answer its decision card"). The asks of the newest relay open expanded with their buttons, and a row from another workspace names that workspace above its title. Answers still go to the agent that owns the ask.
 
 ## How it works
 
@@ -71,6 +72,9 @@ P=$(jq -r .port $S); T=$(jq -r .token $S)
 curl -s -H "authorization: Bearer $T" -X POST localhost:$P/act \
   -d '{"workspaceId":"wks_…","id":"A3","verb":"action","actionId":"a2"}'
 curl -s -H "authorization: Bearer $T" -X POST localhost:$P/discuss -d '{"workspaceId":"wks_…","id":"A3"}'
+# Relay asks to the agent whose reply pointed at them (the harness does this at turn end), in pointer order:
+curl -s -H "authorization: Bearer $T" -X POST localhost:$P/relay \
+  -d '{"readerAgentId":"agent-…","asks":[{"workspaceId":"wks_…","id":"A3"}]}'
 ```
 
 ## Develop

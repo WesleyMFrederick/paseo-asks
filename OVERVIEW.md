@@ -8,7 +8,7 @@ Every agent created after the plugin is installed gets an `asks` MCP server with
 
 - **Asks** panel in each workspace.
 - **Asks** screen in the sidebar, with every workspace's asks and a count of what is waiting.
-- **Asks** pill in every agent's composer, showing its open count or "No asks". Pressing it lists that agent's asks and offers **Refresh asks**, which tells the agent to bring them up to date.
+- **Asks** pill in every agent's composer, showing its open count or "No asks". Pressing it lists that agent's asks and offers **Refresh asks**, which tells the agent to bring them up to date. It also lists asks from other agents and workspaces that the agent's replies pointed at (relayed at the end of each turn); the newest of those open expanded and name their workspace.
 
 From an ask you can pick one of its actions, reply with a note, mark it done or drop it, or open a side chat to talk it through. The side chat starts read-only and already has the ask in context. When you settle it there, the main agent gets the outcome as one message. PR asks show live status from `gh` when `gh` is installed. An agent can subscribe to be told when its PR merges, closes, or its checks change.
 

@@ -4,7 +4,7 @@ Paseo plugin: agents record what they need from the human (asks) via MCP; Paseo 
 
 ## Layout
 
-- `index.server.ts` wires everything. `server/`: `store` (one JSON per workspace), `outbox` (disk-backed, holds messages until the agent's turn ends), `service` (MCP tools + human actions + agent instructions), `bridge` (stdio MCP script, written to the data dir at start), `listener` (localhost HTTP the bridge calls), `agents` (agentId → workspaceId), `discuss` (read-only side chat, child of the owner), `github` + `watcher` (live PR state via `gh`, subscriptions), `last-output` (each agent's latest reply, seeds side chats).
+- `index.server.ts` wires everything. `server/`: `store` (one JSON per workspace), `outbox` (disk-backed, holds messages until the agent's turn ends), `service` (MCP tools + human actions + relays + agent instructions), `bridge` (stdio MCP script, written to the data dir at start), `listener` (localhost HTTP the bridge, scripts and the harness call), `agents` (agentId → workspaceId), `discuss` (read-only side chat, child of the owner), `github` + `watcher` (live PR state via `gh`, subscriptions), `last-output` (each agent's latest reply, seeds side chats).
 - `client/` + `index.client.tsx`: React Native only (runs on mobile). Colors from `theme.colors`. Open URLs with `openExternalUrl` (default browser); `window.open` opens an unauthenticated in-app Paseo window. Client code can import only host modules, hence the in-house `shared/markdown.ts`.
 - `shared/asks.ts`: Zod schemas and RPC contracts.
 - `preview/`: own package.json; renders `client/` with react-native-web and mocked host modules for screenshots (`docs/*.png`). Not shipped.
@@ -23,3 +23,4 @@ Paseo plugin: agents record what they need from the human (asks) via MCP; Paseo 
 - `npm run typecheck` (client and server tsconfigs), `npm test` (vitest).
 - After edits: `paseo plugin reload paseo-asks`, then `paseo plugin ls` must say `running`; logs via `paseo plugin logs paseo-asks`. Never restart the daemon.
 - Act on an ask from a terminal: POST `/act` on the port in `~/.paseo/plugin-data/asks/server.json` with its bearer token.
+- Relay: the harness POSTs `/relay` `{ readerAgentId, asks: [{ workspaceId, id }] }` at turn end with the asks a reply's pointer lines named; each ask's `relayedTo` gets that agent, and its composer pill lists them.

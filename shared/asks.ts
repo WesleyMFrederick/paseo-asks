@@ -58,6 +58,8 @@ export const AskSchema = z.object({
   pr: PrStateSchema.optional(),
   /** The side chat opened to talk this ask through. */
   discussionAgentId: z.string().optional(),
+  /** Agents whose chat pointed at this ask, one entry per agent with the latest time; their composer pill lists it. */
+  relayedTo: z.array(z.object({ agentId: z.string(), at: z.string() })).optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
@@ -65,14 +67,44 @@ export type Ask = z.infer<typeof AskSchema>;
 
 export const OPEN_STATUSES: readonly Ask["status"][] = ["open", "in_progress"];
 
-/** The composer pill's face: the same asks its popover lists (this agent's open and in-progress ones). */
-export function pillLabel(asks: readonly Pick<Ask, "ownerAgentId" | "status">[], agentId: string): string {
-  const mine = asks.filter((ask) => ask.ownerAgentId === agentId);
+/** The asks an agent's composer pill counts and its popover lists: the ones it owns plus the ones relayed to it. */
+export function readerAsks<T extends Pick<Ask, "ownerAgentId" | "relayedTo">>(asks: readonly T[], agentId: string): T[] {
+  return asks.filter((ask) => ask.ownerAgentId === agentId || ask.relayedTo?.some((entry) => entry.agentId === agentId));
+}
+
+/** The composer pill's face: the same asks its popover lists (this agent's own and relayed open and in-progress ones). */
+export function pillLabel(asks: readonly Pick<Ask, "ownerAgentId" | "status" | "relayedTo">[], agentId: string): string {
+  const mine = readerAsks(asks, agentId);
   const open = mine.filter((ask) => ask.status === "open").length;
   const working = mine.filter((ask) => ask.status === "in_progress").length;
   const parts = [open > 0 ? `${open}` : "", working > 0 ? `${working} in progress` : ""].filter(Boolean);
   return parts.length ? `Asks · ${parts.join(" · ")}` : "No asks";
 }
+
+/** Relays this close to the newest one came from the same reply. */
+const RELAY_BATCH_MS = 5000;
+
+/**
+ * Keys (`workspaceId/id`) of the popover rows that start expanded: the still-open (open or in-progress) asks of the
+ * newest relay to this agent, newest first, which is the order the reply pointed at them. Empty when none.
+ */
+export function firstExpanded(asks: readonly Pick<Ask, "workspaceId" | "id" | "status" | "relayedTo">[], agentId: string): string[] {
+  const relayed = asks.flatMap((ask) => {
+    const at = ask.relayedTo?.find((entry) => entry.agentId === agentId)?.at;
+    return at && OPEN_STATUSES.includes(ask.status) ? [{ key: `${ask.workspaceId}/${ask.id}`, at: Date.parse(at) }] : [];
+  });
+  const newest = Math.max(...relayed.map((entry) => entry.at));
+  return relayed
+    .filter((entry) => newest - entry.at <= RELAY_BATCH_MS)
+    .sort((a, b) => b.at - a.at)
+    .map((entry) => entry.key);
+}
+
+/** The harness relays the asks a reply's pointer lines name, in pointer order, to the agent whose chat holds the reply. */
+export const RelayInputSchema = z.object({
+  readerAgentId: z.string().min(1),
+  asks: z.array(z.object({ workspaceId: z.string(), id: z.string() })).min(1),
+});
 
 export const listAsks = defineRpc({
   name: "asks.list",

@@ -4,7 +4,7 @@ import { Icon, ScrollView, TextInput, useToast } from "@getpaseo/plugin/client/r
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { Pressable, Text, View } from "react-native";
-import { actOnAsk, discussAsk, listAsks, refreshAsks, type Action, type Ask, type PrState } from "../shared/asks";
+import { actOnAsk, discussAsk, firstExpanded, listAsks, readerAsks, refreshAsks, type Action, type Ask, type PrState } from "../shared/asks";
 import { Markdown, openLink } from "./Markdown";
 
 export const POLL_MS = 4000;
@@ -60,9 +60,19 @@ export function AsksView({ theme, compact, workspaceId, openAgent }: ViewProps) 
 }
 
 /** The asks list, collapsed rows that open on tap, split into NEEDS YOU and IN PROGRESS. Shared by the panel, the global screen and the pill popover. */
-function AskSections(props: { asks: readonly Ask[]; styles: Styles; theme: PluginTheme; openAgent?: (agentId: string) => void }) {
-  const { asks, styles, theme, openAgent } = props;
-  const [expanded, setExpanded] = useState<string | null>(null);
+function AskSections(props: {
+  asks: readonly Ask[];
+  styles: Styles;
+  theme: PluginTheme;
+  openAgent?: (agentId: string) => void;
+  /** Row keys (`workspaceId/id`) open at first. Followed as data arrives until the user toggles a row. */
+  initialExpanded?: readonly string[];
+  /** A workspace name to show above a row, for asks that live elsewhere. */
+  placeOf?: (ask: Ask) => string | undefined;
+}) {
+  const { asks, styles, theme, openAgent, initialExpanded = [], placeOf } = props;
+  const [toggled, setToggled] = useState<ReadonlySet<string> | null>(null);
+  const expanded = toggled ?? new Set(initialExpanded);
   return (
     <>
       {(["open", "in_progress"] as const).map((status) => {
@@ -79,8 +89,14 @@ function AskSections(props: { asks: readonly Ask[]; styles: Styles; theme: Plugi
                   ask={ask}
                   styles={styles}
                   theme={theme}
-                  expanded={expanded === key}
-                  onToggle={() => setExpanded(expanded === key ? null : key)}
+                  place={placeOf?.(ask)}
+                  expanded={expanded.has(key)}
+                  onToggle={() => {
+                    const next = new Set(expanded);
+                    if (next.has(key)) next.delete(key);
+                    else next.add(key);
+                    setToggled(next);
+                  }}
                   openAgent={openAgent}
                 />
               );
@@ -92,11 +108,15 @@ function AskSections(props: { asks: readonly Ask[]; styles: Styles; theme: Plugi
   );
 }
 
-/** One agent's asks, a Refresh that asks it to bring them up to date, and an Open wide to the Asks panel when given, for the composer pill's popover. */
+/**
+ * One agent's asks (its own and those relayed to it), a Refresh that asks it to bring them up to date, and an Open wide
+ * to the Asks panel when given, for the composer pill's popover. The newest relay's asks start expanded.
+ */
 export function AgentAsks(props: { theme: PluginTheme; compact: boolean; workspaceId: string; agentId: string; onOpenWide?: () => void }) {
   const { theme, compact, workspaceId, agentId, onOpenWide } = props;
   const styles = useMemo(() => makeStyles(theme, compact), [theme, compact]);
-  const asks = useAsks(workspaceId);
+  // Every workspace: relayed asks can live in another one.
+  const asks = useAsks();
   const refresh = useRpc(refreshAsks);
   const toast = useToast();
   const mutation = useMutation({
@@ -107,12 +127,25 @@ export function AgentAsks(props: { theme: PluginTheme; compact: boolean; workspa
 
   if (asks.isPending) return <Message styles={styles} text="Loading asks…" />;
   if (asks.isError) return <Message styles={styles} text={`Could not load asks: ${asks.error.message}`} danger />;
-  const mine = asks.data.asks.filter((ask) => ask.ownerAgentId === agentId);
+  const readable = readerAsks(asks.data.asks, agentId);
+  const expanded = firstExpanded(readable, agentId);
+  // The newest relay's asks lead their section, in pointer order, so an opened card never sits below the chat's own asks.
+  const listed = [
+    ...expanded.flatMap((key) => readable.filter((ask) => `${ask.workspaceId}/${ask.id}` === key)),
+    ...readable.filter((ask) => !expanded.includes(`${ask.workspaceId}/${ask.id}`)),
+  ];
+  const names = asks.data.workspaceNames;
   // No own ScrollView or width: the host popover sizes (280–420 wide) and scrolls it.
   return (
     <View style={styles.popoverContent}>
-      {mine.length === 0 && <Text style={styles.muted}>This agent has no open asks.</Text>}
-      <AskSections asks={mine} styles={styles} theme={theme} />
+      {listed.length === 0 && <Text style={styles.muted}>This agent has no open asks.</Text>}
+      <AskSections
+        asks={listed}
+        styles={styles}
+        theme={theme}
+        initialExpanded={expanded}
+        placeOf={(ask) => (ask.workspaceId === workspaceId ? undefined : (names?.[ask.workspaceId] ?? ask.workspaceId))}
+      />
       <View style={styles.buttons}>
         <Button
           styles={styles}
@@ -131,12 +164,15 @@ function AskRow(props: {
   styles: Styles;
   theme: PluginTheme;
   expanded: boolean;
+  /** Workspace name shown above the row; absent for asks in the current workspace. */
+  place?: string;
   onToggle(): void;
   openAgent?: (agentId: string) => void;
 }) {
-  const { ask, styles, theme, expanded } = props;
+  const { ask, styles, theme, expanded, place } = props;
   return (
     <View style={[styles.card, expanded && styles.cardExpanded]}>
+      {place && <Text style={styles.place}>{place}</Text>}
       <Pressable
         accessibilityRole="button"
         accessibilityLabel={`${ask.id}: ${ask.title}`}
@@ -327,6 +363,7 @@ function makeStyles(theme: PluginTheme, compact: boolean) {
     sectionTitle: { color: colors.foregroundMuted, fontSize: 11, letterSpacing: 0.5 },
     card: { borderWidth: 1, borderColor: colors.border, borderRadius: 8, backgroundColor: colors.surface1 },
     cardExpanded: { borderColor: colors.accent },
+    place: { color: colors.foregroundMuted, fontSize: 11, paddingHorizontal: compact ? 12 : 10, paddingTop: 8 },
     row: { flexDirection: "row" as const, alignItems: "center" as const, gap: 8, padding: compact ? 12 : 10 },
     id: { color: colors.foregroundMuted, fontSize: 12, fontVariant: ["tabular-nums" as const] },
     title: { color: colors.foreground, flex: 1, fontSize: 14 },
