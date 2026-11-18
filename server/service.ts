@@ -196,8 +196,8 @@ export class AsksService {
         if (!action) throw new Error(`Ask ${ask.id} has no action ${input.actionId}`);
         if (action.kind === "open") throw new Error("Open actions run on the client");
         if (action.kind === "send") {
-          if (ask.status === "in_progress" && !ask.autoStatus) throw new Error(`${ask.id} send action was already sent; nothing was changed or sent`);
-          next = await this.store.update(ask.workspaceId, ask.id, { status: "in_progress", autoStatus: false });
+          // Checked and claimed under the store lock, so a concurrent second press is refused before anything is queued.
+          next = await this.store.claimSend(ask.workspaceId, ask.id);
           message = `${head} "${action.label}": ${action.prompt ?? action.label}.${noted} When it is done, call ask_resolve for ${ask.id}.`;
         } else {
           const outcome = { actionId: action.id, label: action.label, note, by: "human" as const, at };

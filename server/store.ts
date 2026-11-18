@@ -85,6 +85,20 @@ export class AskStore {
     });
   }
 
+  /** Check the ask is still sendable and mark it sent inside the workspace lock; of two concurrent sends, one is refused. */
+  claimSend(workspaceId: string, id: string): Promise<Ask> {
+    return this.mutate(workspaceId, (file) => {
+      const current = file.asks.find((ask) => ask.id === id);
+      if (!current) throw new Error(`No ask ${id} in this workspace`);
+      if (!OPEN_STATUSES.includes(current.status)) throw new Error(`${id} is already ${current.status}; nothing was changed or sent`);
+      if (current.status === "in_progress" && !current.autoStatus) throw new Error(`${id} send action was already sent; nothing was changed or sent`);
+      current.status = "in_progress";
+      current.autoStatus = false;
+      current.updatedAt = this.now().toISOString();
+      return current;
+    });
+  }
+
   /** Validate every target and merge stamps under all affected workspace locks; no target is written on refusal. */
   relay(readerAgentId: string, targets: readonly Pick<Ask, "workspaceId" | "id">[], at: number, batch: string): Promise<void> {
     return this.mutateWorkspaces([...new Set(targets.map((target) => target.workspaceId))], (files) => {

@@ -248,6 +248,22 @@ describe("asks", () => {
     expect(courier.sent).toHaveLength(1);
   });
 
+  it("Given an ask with a send action, When two sends start concurrently, Then one is applied, the other is refused, and one delivery is queued", async () => {
+    // Given
+    await service.callTool(AGENT, "ask_create", { kind: "followup", title: "Approve", actions: [{ label: "Approve", kind: "send" }] });
+    courier.states.set(AGENT, "running");
+    // When
+    const results = await Promise.allSettled([
+      service.act({ workspaceId: WS, id: "A1", verb: "action", actionId: "a1" }),
+      service.act({ workspaceId: WS, id: "A1", verb: "action", actionId: "a1" }),
+    ]);
+    // Then
+    const refused = results.filter((result): result is PromiseRejectedResult => result.status === "rejected");
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(refused.map((result) => (result.reason as Error).message)).toEqual(["A1 send action was already sent; nothing was changed or sent"]);
+    expect(outbox.pending(AGENT)).toHaveLength(1);
+  });
+
   describe("relaying asks to the agent whose chat points at them", () => {
     const OTHER_WS = "wks_2";
     const T0 = "2026-11-17T10:00:00.000Z";
