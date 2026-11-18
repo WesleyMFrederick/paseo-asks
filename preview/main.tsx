@@ -3,6 +3,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createRoot } from "react-dom/client";
 import { Text, View } from "react-native";
 import { AgentAsks, AsksView } from "../client/AsksView";
+import { pillLabel } from "../shared/asks";
+import { asks } from "./fixtures";
 
 const theme = {
   colors: {
@@ -67,6 +69,10 @@ createRoot(document.getElementById("root")!).render(
     <WidePill />
     <Frame id="phone-pill" title="Asks (phone pill sheet)" width={390} height={520}>
       <AgentAsks theme={theme} compact workspaceId="api" agentId="main" />
+    </Frame>
+    {/* A chief-of-staff chat that owns no asks: its pill lists asks relayed from other workspaces, newest relay open first. */}
+    <Frame id="cos-phone-pill" title={`CoS pill "${pillLabel(asks, "cos")}" (phone sheet)`} width={390} height={640}>
+      <AgentAsks theme={theme} compact workspaceId="cos-ws" agentId="cos" />
     </Frame>
   </QueryClientProvider>,
 );

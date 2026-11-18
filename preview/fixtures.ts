@@ -3,12 +3,37 @@ import type { Ask } from "../shared/asks";
 export const workspaces: Record<string, string> = {
   api: "acme/shop-api · checkout rework",
   infra: "acme/infra · staging cluster",
+  web: "acme/shop-web · storefront",
 };
 
 const ago = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
 const base = { links: [], actions: [], createdAt: ago(300) };
 
+// The chief-of-staff chat ("cos", in workspace "cos-ws") owns no asks; its replies pointed at A8 (newest relay) and, earlier, A6.
+const relay = (batch: string, minutes: number) => [{ agentId: "cos", at: ago(minutes), batch, index: 0 }];
+
 export const asks: Ask[] = [
+  {
+    ...base,
+    id: "A8",
+    workspaceId: "web",
+    ownerAgentId: "web",
+    kind: "decision",
+    status: "open",
+    title: "Launch the new product grid behind a flag or to everyone?",
+    body: [
+      "**Why decide now:** the grid PR is green and Friday's sale traffic hits whichever version ships.",
+      "",
+      "- **Behind a flag (recommended).** 10% of visitors first; one switch rolls it back.",
+      "- **Everyone.** Simpler, but a layout bug would hit the whole sale.",
+    ].join("\n"),
+    actions: [
+      { id: "a1", label: "Behind a flag", kind: "resolve", recommended: true },
+      { id: "a2", label: "Everyone", kind: "resolve" },
+    ],
+    relayedTo: relay("relay-2", 2),
+    updatedAt: ago(20),
+  },
   {
     ...base,
     id: "A3",
@@ -115,6 +140,7 @@ export const asks: Ask[] = [
     kind: "question",
     status: "open",
     title: "Which region for the new staging node: eu-west or eu-central?",
+    relayedTo: relay("relay-1", 30),
     updatedAt: ago(40),
   },
 ];
