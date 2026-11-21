@@ -2,7 +2,7 @@ import { appendFileSync } from "node:fs";
 import { join } from "node:path";
 import type { PaseoApi } from "@getpaseo/client";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
-import { actOnAsk, discussAsk, latestRelays, listAsks, OPEN_STATUSES, refreshAsks, RelayInputSchema } from "./shared/asks";
+import { actOnAsk, CloseInputSchema, discussAsk, latestRelays, listAsks, OPEN_STATUSES, ReassignInputSchema, refreshAsks, RelayInputSchema } from "./shared/asks";
 import { AgentDirectory } from "./server/agents";
 import { installBridge } from "./server/bridge";
 import { discuss } from "./server/discuss";
@@ -14,7 +14,7 @@ import { Outbox, type Courier } from "./server/outbox";
 import { dataDir } from "./server/paths";
 import { RunStatus, type FlipLogEntry } from "./server/run-status";
 import { AskStore } from "./server/store";
-import { AsksService, INSTRUCTIONS, TOOLS } from "./server/service";
+import { AsksService, INSTRUCTIONS, TOOLS, type OwnerState } from "./server/service";
 import { PrWatcher } from "./server/watcher";
 
 const FLUSH_EVERY_MS = 20_000;
@@ -56,15 +56,23 @@ export default function contribute(server: PluginServerContext) {
       if (ask && OPEN_STATUSES.includes(ask.status)) await store.update(workspaceId, ask.id, { orphaned: true });
     }
   });
-  // Every human action on an ask, applied or refused, one JSON line each.
+  // Every human action on an ask, and every admin reassign/close, applied or refused, one JSON line each.
   const actLog = join(dir, "act-log.jsonl");
   // Every automatic open/in_progress flip, one JSON line each.
   const flipLog = join(dir, "status-flip-log.jsonl");
   const logFlip = (entry: FlipLogEntry) => appendFileSync(flipLog, `${JSON.stringify(entry)}\n`);
   const runStatus = new RunStatus(store, logFlip);
+  // Admin moves and closes: "closed" (session ended) is told apart from "gone" (unknown or archived).
+  const ownerState = async (agentId: string): Promise<OwnerState> => {
+    const handle = requirePaseo().agents.ref(agentId);
+    const found = await handle.refresh();
+    if (!found || handle.archivedAt) return "gone";
+    if (handle.status === "closed") return "closed";
+    return handle.status === "running" || handle.status === "initializing" ? "running" : "idle";
+  };
   const service = new AsksService(store, outbox, (agentId) => agents.workspaceOf(agentId), (entry) =>
     appendFileSync(actLog, `${JSON.stringify(entry)}\n`),
-  logFlip);
+  logFlip, ownerState);
   const lastOutputs = new LastOutputs(dir);
   const gh = findGh();
   if (!gh) console.error("[asks] gh not found; PR asks will show no live status");
@@ -156,6 +164,10 @@ export default function contribute(server: PluginServerContext) {
     },
     // The harness, at turn end: the asks a reply's pointer lines named, so the reader's pill lists them.
     "/relay": async (input) => service.relay(RelayInputSchema.parse(input)),
+    // Move an open ask whose owner is closed to a live agent; refused while the owner is running or idle.
+    "/reassign": async (input) => service.reassign(ReassignInputSchema.parse(input)),
+    // Mark done an open ask whose owner is closed; refused while the owner is running or idle.
+    "/close": async (input) => service.close(CloseInputSchema.parse(input)),
   });
   const timer = setInterval(() => {
     if (paseo && outbox.pending().length) void outbox.flush();

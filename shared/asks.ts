@@ -124,6 +124,12 @@ export const RelayInputSchema = z.object({
   asks: z.array(z.object({ workspaceId: z.string(), id: z.string() })).min(1),
 });
 
+/** Move an open ask whose owner is closed to a live agent; `by` is the caller's agent id, recorded in the log. */
+export const ReassignInputSchema = z.object({ workspaceId: z.string().min(1), id: z.string().min(1), toAgentId: z.string().min(1), reason: z.string().trim().min(1), by: z.string().trim().min(1) });
+
+/** Close (mark done) an open ask whose owner is closed; `by` is the caller's agent id, recorded in the log. */
+export const CloseInputSchema = z.object({ workspaceId: z.string().min(1), id: z.string().min(1), reason: z.string().trim().min(1), by: z.string().trim().min(1) });
+
 export const listAsks = defineRpc({
   name: "asks.list",
   input: z.object({ workspaceId: z.string().optional(), includeClosed: z.boolean().optional() }),

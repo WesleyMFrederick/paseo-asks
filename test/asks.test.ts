@@ -1,9 +1,9 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { Outbox, type AgentState, type Courier } from "../server/outbox";
-import { AsksService } from "../server/service";
+import { AskAlreadyClosedError, AskOwnerLiveError, AsksService, AskTargetNotLiveError, type ActLogEntry, type AdminLogEntry, type OwnerState as AdminOwnerState } from "../server/service";
 import { AskStore } from "../server/store";
 import { RunStatus, type OwnerState } from "../server/run-status";
 import { firstExpanded, latestRelays, OPEN_STATUSES, pillLabel, visibleActions, type Ask } from "../shared/asks";
@@ -440,6 +440,122 @@ describe("asks", () => {
       const expanded = firstExpanded(store.list(), AGENT);
       // Then
       expect(expanded).toEqual([]);
+    });
+  });
+
+  describe("moving or closing an ask whose owner is closed", () => {
+    const OTHER_WS = "wks_2";
+    const TARGET = "agent-2";
+    const NEIGHBOR = "agent-3";
+    const workspaces: Record<string, string> = { [AGENT]: WS, [TARGET]: OTHER_WS, [NEIGHBOR]: WS };
+    let states: Map<string, AdminOwnerState>;
+    let log: Mock<(entry: ActLogEntry | AdminLogEntry) => void>;
+    let admin: AsksService;
+
+    beforeEach(async () => {
+      states = new Map();
+      log = vi.fn();
+      admin = new AsksService(store, outbox, async (agentId) => workspaces[agentId] ?? null, log, () => {}, async (agentId) => states.get(agentId) ?? "idle");
+      await admin.callTool(AGENT, "ask_create", decision);
+    });
+
+    it("Given an ask whose owner is closed, When reassigned to a live agent in another workspace, Then the target has a new open copy, the old ask is dropped with a note, and the target gets one message", async () => {
+      // Given
+      states.set(AGENT, "closed");
+      const original = store.get(WS, "A1")!;
+      // When
+      const { moved, from } = await admin.reassign({ workspaceId: WS, id: "A1", toAgentId: TARGET, reason: "owner session ended", by: "cos-1" });
+      await outbox.flush();
+      // Then
+      const copy = new AskStore(dir).get(OTHER_WS, "A1");
+      expect(moved).toEqual(copy);
+      expect(copy).toMatchObject({ ownerAgentId: TARGET, status: "open", title: original.title, actions: original.actions });
+      expect(copy?.outcome).toBeUndefined();
+      expect(copy?.autoStatus).toBeUndefined();
+      const old = new AskStore(dir).get(WS, "A1");
+      expect(from).toEqual(old);
+      expect(old?.status).toBe("dropped");
+      expect(old?.outcome).toMatchObject({ by: "agent", note: `Moved to ${OTHER_WS}/A1 (owner ${AGENT} closed) by cos-1: owner session ended` });
+      expect(courier.sent).toEqual([{ agentId: TARGET, text: expect.stringMatching(/^\[asks\] A1 \(Squash-only merges\?\) is now yours\. It moved from wks_1\/A1/), messageId: expect.any(String) }]);
+      expect(log).toHaveBeenCalledTimes(1);
+      expect(log).toHaveBeenCalledWith(expect.objectContaining({ verb: "reassign", ownerAgentId: AGENT, ownerState: "closed", movedTo: `${OTHER_WS}/A1`, before: "in_progress", after: "dropped" }));
+      expect(log.mock.calls[0]![0].error).toBeUndefined();
+    });
+
+    it("Given an ask whose owner is closed, When reassigned to a live agent in the same workspace, Then the same id has the new owner and is open", async () => {
+      // Given
+      states.set(AGENT, "gone");
+      // When
+      const { moved } = await admin.reassign({ workspaceId: WS, id: "A1", toAgentId: NEIGHBOR, reason: "taking over", by: "cos-1" });
+      // Then
+      expect(moved.id).toBe("A1");
+      expect(store.list(WS)).toHaveLength(1);
+      expect(store.get(WS, "A1")).toMatchObject({ ownerAgentId: NEIGHBOR, status: "open" });
+      expect(store.get(WS, "A1")?.autoStatus).toBeUndefined();
+      expect(log).toHaveBeenCalledTimes(1);
+      expect(log).toHaveBeenCalledWith(expect.objectContaining({ verb: "reassign", movedTo: `${WS}/A1`, after: "open" }));
+    });
+
+    it("Given the owner is idle, When the ask is reassigned or closed, Then each throws AskOwnerLiveError and nothing in the store changed", async () => {
+      // Given
+      const snapshot = structuredClone(store.list());
+      // When
+      const reassigning = admin.reassign({ workspaceId: WS, id: "A1", toAgentId: TARGET, reason: "r", by: "cos-1" });
+      await expect(reassigning).rejects.toBeInstanceOf(AskOwnerLiveError);
+      const closing = admin.close({ workspaceId: WS, id: "A1", reason: "r", by: "cos-1" });
+      await expect(closing).rejects.toThrow(/^AskOwnerLiveError: wks_1\/A1 owner agent-1 is idle/);
+      // Then
+      expect(store.list()).toEqual(snapshot);
+      expect(courier.sent).toEqual([]);
+      expect(log).toHaveBeenCalledTimes(2);
+      expect(log.mock.calls.map(([entry]) => entry as AdminLogEntry).map((entry) => [entry.verb, entry.ownerState, entry.error?.split(":")[0]])).toEqual([
+        ["reassign", "idle", "AskOwnerLiveError"],
+        ["close", "idle", "AskOwnerLiveError"],
+      ]);
+    });
+
+    it("Given the owner and the target are closed, When the ask is reassigned, Then it throws AskTargetNotLiveError and nothing changed", async () => {
+      // Given
+      states.set(AGENT, "closed");
+      states.set(TARGET, "closed");
+      const snapshot = structuredClone(store.list());
+      // When
+      const reassigning = admin.reassign({ workspaceId: WS, id: "A1", toAgentId: TARGET, reason: "r", by: "cos-1" });
+      // Then
+      await expect(reassigning).rejects.toBeInstanceOf(AskTargetNotLiveError);
+      expect(store.list()).toEqual(snapshot);
+      expect(store.list(OTHER_WS)).toEqual([]);
+      expect(log).toHaveBeenCalledTimes(1);
+      expect(log).toHaveBeenCalledWith(expect.objectContaining({ verb: "reassign", toAgentId: TARGET, error: expect.stringMatching(/^AskTargetNotLiveError: /) }));
+    });
+
+    it("Given an ask whose owner is closed, When it is closed with a reason, Then it is done with the reason as an agent outcome and nobody is messaged", async () => {
+      // Given
+      states.set(AGENT, "closed");
+      // When
+      const { ask } = await admin.close({ workspaceId: WS, id: "A1", reason: "superseded by A7", by: "cos-1" });
+      await outbox.flush();
+      // Then
+      expect(new AskStore(dir).get(WS, "A1")).toEqual(ask);
+      expect(ask.status).toBe("done");
+      expect(ask.outcome).toMatchObject({ by: "agent", note: "superseded by A7" });
+      expect(courier.sent).toEqual([]);
+      expect(outbox.pending()).toEqual([]);
+      expect(log).toHaveBeenCalledTimes(1);
+      expect(log).toHaveBeenCalledWith(expect.objectContaining({ verb: "close", by: "cos-1", reason: "superseded by A7", ownerState: "closed", before: "in_progress", after: "done" }));
+    });
+
+    it("Given an already-done ask, When it is closed, Then it throws AskAlreadyClosedError and logs the refusal", async () => {
+      // Given
+      states.set(AGENT, "closed");
+      await store.update(WS, "A1", { status: "done" });
+      // When
+      const closing = admin.close({ workspaceId: WS, id: "A1", reason: "r", by: "cos-1" });
+      // Then
+      await expect(closing).rejects.toBeInstanceOf(AskAlreadyClosedError);
+      expect(store.get(WS, "A1")?.outcome).toBeUndefined();
+      expect(log).toHaveBeenCalledTimes(1);
+      expect(log).toHaveBeenCalledWith(expect.objectContaining({ verb: "close", before: "done", error: expect.stringMatching(/^AskAlreadyClosedError: /) }));
     });
   });
 });

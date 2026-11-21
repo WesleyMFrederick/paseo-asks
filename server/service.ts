@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { ACTION_KINDS, ASK_KINDS, ASK_STATUSES, OPEN_STATUSES, type Ask, type RelayInputSchema } from "../shared/asks";
+import { ACTION_KINDS, ASK_KINDS, ASK_STATUSES, OPEN_STATUSES, type Ask, type CloseInputSchema, type ReassignInputSchema, type RelayInputSchema } from "../shared/asks";
 import { REFRESH } from "./nudge";
 import type { Delivery as OutboxDelivery, Outbox } from "./outbox";
 import type { FlipLogEntry } from "./run-status";
@@ -98,13 +98,68 @@ export interface ActLogEntry extends ActInput {
   error?: string;
 }
 
+/** What the daemon says about an agent; "gone" means unknown or archived. */
+export type OwnerState = "running" | "idle" | "closed" | "gone";
+
+/** One line per admin move or close of an ask whose owner is closed, success or refusal. */
+export interface AdminLogEntry {
+  at: string;
+  verb: "reassign" | "close";
+  workspaceId: string;
+  id: string;
+  by: string;
+  reason: string;
+  /** Absent only when the ask was not found. */
+  ownerAgentId?: string;
+  ownerState?: OwnerState;
+  toAgentId?: string;
+  /** `workspaceId/id` of the ask after a reassign. */
+  movedTo?: string;
+  before?: Ask["status"];
+  after?: Ask["status"];
+  error?: string;
+}
+
+/** The ask's owner is running or idle; only the owner may close or hand off its ask. */
+export class AskOwnerLiveError extends Error {
+  override readonly name = "AskOwnerLiveError";
+  constructor(detail: string) {
+    super(`AskOwnerLiveError: ${detail}`);
+  }
+}
+
+/** The agent an ask would move to is closed, gone, its current owner, or has no workspace. */
+export class AskTargetNotLiveError extends Error {
+  override readonly name = "AskTargetNotLiveError";
+  constructor(detail: string) {
+    super(`AskTargetNotLiveError: ${detail}`);
+  }
+}
+
+/** The ask is already done or dropped. */
+export class AskAlreadyClosedError extends Error {
+  override readonly name = "AskAlreadyClosedError";
+  constructor(detail: string) {
+    super(`AskAlreadyClosedError: ${detail}`);
+  }
+}
+
+/** No ask with that workspace and id. */
+export class AskNotFoundError extends Error {
+  override readonly name = "AskNotFoundError";
+  constructor(detail: string) {
+    super(`AskNotFoundError: ${detail}`);
+  }
+}
+
 export class AsksService {
   constructor(
     private readonly store: AskStore,
     private readonly outbox: Outbox,
     private readonly workspaceOf: (agentId: string) => Promise<string | null>,
-    private readonly log: (entry: ActLogEntry) => void = () => {},
+    private readonly log: (entry: ActLogEntry | AdminLogEntry) => void = () => {},
     private readonly flipLog: (entry: FlipLogEntry) => void = () => {},
+    private readonly ownerState: (agentId: string) => Promise<OwnerState> = async () => "idle",
   ) {}
 
   async callTool(agentId: string | null, name: string, args: unknown): Promise<ToolResult> {
@@ -259,6 +314,73 @@ export class AsksService {
     const unique = asks.filter((ask, index) => asks.findIndex((other) => other.workspaceId === ask.workspaceId && other.id === ask.id) === index);
     await this.store.relay(readerAgentId, unique, Date.now(), randomUUID());
     return { relayed: unique.map(({ workspaceId, id }) => ({ workspaceId, id })) };
+  }
+
+  /**
+   * Move an open ask whose owner is closed or gone to a live (running or idle) agent, then tell that agent. Refuses,
+   * changing nothing, when the owner is live, the target is not live or has no workspace, or the ask is closed or
+   * missing. Another workspace gets a new ask and the old one is dropped with a note naming where it went.
+   */
+  async reassign({ workspaceId, id, toAgentId, reason, by }: z.output<typeof ReassignInputSchema>): Promise<{ moved: Ask; from: Ask }> {
+    const base = { verb: "reassign" as const, workspaceId, id, by, reason, toAgentId };
+    const before = this.store.get(workspaceId, id);
+    const seen: { ownerState?: OwnerState } = {};
+    try {
+      const ask = this.requireOpen(workspaceId, id);
+      const old = ask.ownerAgentId;
+      seen.ownerState = await this.ownerState(old);
+      this.requireOwnerClosed(ask, seen.ownerState);
+      if (toAgentId === old) throw new AskTargetNotLiveError(`${workspaceId}/${id} is already owned by ${toAgentId}. Nothing was changed.`);
+      const targetState = await this.ownerState(toAgentId);
+      if (targetState !== "running" && targetState !== "idle") throw new AskTargetNotLiveError(`target ${toAgentId} is ${targetState}; pick a running or idle agent. Nothing was changed.`);
+      const toWs = await this.workspaceOf(toAgentId);
+      if (!toWs) throw new AskTargetNotLiveError(`target ${toAgentId} has no workspace. Nothing was changed.`);
+      const result = await this.store.move({ workspaceId, id }, { workspaceId: toWs, ownerAgentId: toAgentId }, (movedId) =>
+        `Moved to ${toWs}/${movedId} (owner ${old} closed) by ${by}: ${reason}`);
+      const { moved } = result;
+      const text = `[asks] ${moved.id} (${moved.title}) is now yours. It moved from ${workspaceId}/${id}, whose owner ${old} is closed. Reason from ${by}: ${reason}. Check its facts, then ask_update or ask_resolve it.`;
+      this.outbox.enqueue({ agentId: toAgentId, workspaceId: toWs, askId: moved.id, text });
+      void this.outbox.flush(toAgentId);
+      this.log({ at: new Date().toISOString(), ...base, ownerAgentId: old, ownerState: seen.ownerState, movedTo: `${toWs}/${moved.id}`, before: ask.status, after: result.from.status });
+      return result;
+    } catch (error) {
+      this.log({ at: new Date().toISOString(), ...base, ownerAgentId: before?.ownerAgentId, ownerState: seen.ownerState, before: before?.status, error: error instanceof Error ? error.message : String(error) });
+      throw error;
+    }
+  }
+
+  /**
+   * Mark done an open ask whose owner is closed or gone, with the reason as its outcome. Tells nobody (the owner is
+   * closed). Refuses, changing nothing, when the owner is live or the ask is closed or missing.
+   */
+  async close({ workspaceId, id, reason, by }: z.output<typeof CloseInputSchema>): Promise<{ ask: Ask }> {
+    const base = { verb: "close" as const, workspaceId, id, by, reason };
+    const before = this.store.get(workspaceId, id);
+    const seen: { ownerState?: OwnerState } = {};
+    try {
+      const ask = this.requireOpen(workspaceId, id);
+      seen.ownerState = await this.ownerState(ask.ownerAgentId);
+      this.requireOwnerClosed(ask, seen.ownerState);
+      const closed = await this.store.update(workspaceId, id, { status: "done", outcome: { note: reason, by: "agent", at: new Date().toISOString() } });
+      this.log({ at: new Date().toISOString(), ...base, ownerAgentId: ask.ownerAgentId, ownerState: seen.ownerState, before: ask.status, after: closed.status });
+      return { ask: closed };
+    } catch (error) {
+      this.log({ at: new Date().toISOString(), ...base, ownerAgentId: before?.ownerAgentId, ownerState: seen.ownerState, before: before?.status, error: error instanceof Error ? error.message : String(error) });
+      throw error;
+    }
+  }
+
+  private requireOpen(workspaceId: string, id: string): Ask {
+    const ask = this.store.get(workspaceId, id);
+    if (!ask) throw new AskNotFoundError(`no ask ${workspaceId}/${id}. Nothing was changed.`);
+    if (!OPEN_STATUSES.includes(ask.status)) throw new AskAlreadyClosedError(`${workspaceId}/${id} is already ${ask.status}. Nothing was changed.`);
+    return ask;
+  }
+
+  private requireOwnerClosed(ask: Ask, state: OwnerState): void {
+    if (state === "running" || state === "idle") {
+      throw new AskOwnerLiveError(`${ask.workspaceId}/${ask.id} owner ${ask.ownerAgentId} is ${state}; ask it to close or hand off its own ask. Nothing was changed.`);
+    }
   }
 
   private async create(workspaceId: string, agentId: string, input: z.output<typeof CreateInput>): Promise<Ask> {

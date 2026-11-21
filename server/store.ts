@@ -121,6 +121,47 @@ export class AskStore {
     });
   }
 
+  /**
+   * Hand an open ask to a new owner under both workspace locks. Same workspace: the ask keeps its id and gets the new
+   * owner, open. Other workspace: a fresh open copy (next id there, same actions and links, no outcome, relays or side
+   * chat) is created and the old ask is dropped with `note(newId)` as its outcome. Nothing is written on refusal.
+   */
+  move(from: Pick<Ask, "workspaceId" | "id">, to: { workspaceId: string; ownerAgentId: string }, note: (movedId: string) => string): Promise<{ moved: Ask; from: Ask }> {
+    return this.mutateWorkspaces([...new Set([from.workspaceId, to.workspaceId])], (files) => {
+      const source = files.get(from.workspaceId)!;
+      const index = source.asks.findIndex((ask) => ask.id === from.id);
+      if (index < 0) throw new Error(`No ask ${from.id} in this workspace`);
+      const current = source.asks[index]!;
+      if (!OPEN_STATUSES.includes(current.status)) throw new Error(`${from.id} is already ${current.status}; nothing was changed`);
+      const at = this.now().toISOString();
+      if (from.workspaceId === to.workspaceId) {
+        const next: Ask = { ...current, ownerAgentId: to.ownerAgentId, status: "open", orphaned: undefined, autoStatus: undefined, updatedAt: at };
+        source.asks[index] = next;
+        return { moved: next, from: next };
+      }
+      const target = files.get(to.workspaceId)!;
+      const moved: Ask = {
+        id: `A${target.nextId++}`,
+        workspaceId: to.workspaceId,
+        ownerAgentId: to.ownerAgentId,
+        kind: current.kind,
+        title: current.title,
+        body: current.body,
+        actions: current.actions,
+        links: current.links,
+        subscribe: current.subscribe,
+        pr: current.pr,
+        status: "open",
+        createdAt: at,
+        updatedAt: at,
+      };
+      target.asks.push(moved);
+      const dropped: Ask = { ...current, status: "dropped", outcome: { note: note(moved.id), by: "agent", at }, updatedAt: at };
+      source.asks[index] = dropped;
+      return { moved, from: dropped };
+    });
+  }
+
   private workspaceIds(): string[] {
     return readdirSync(this.dir)
       .filter((name) => name.endsWith(".json"))
