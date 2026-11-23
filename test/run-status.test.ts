@@ -198,10 +198,20 @@ describe("automatic status keeps the card answerable", () => {
     ["in_progress", true, ["send", "resolve", "open"]],
     ["in_progress", false, ["resolve", "open"]],
     ["in_progress", undefined, ["resolve", "open"]],
-    ["done", true, []],
-    ["dropped", true, []],
+    ["done", true, ["open"]],
+    ["dropped", true, ["open"]],
   ] as const)("filters buttons for %s with autoStatus %s", (status, autoStatus, expected) => {
     expect(visibleActions({ status, autoStatus, actions }).map(({ id }) => id)).toEqual(expected);
+  });
+
+  it.each([
+    ["done", undefined],
+    ["done", true],
+    ["dropped", undefined],
+    ["dropped", true],
+  ] as const)("keeps report navigation on %s cards with autoStatus %s, without answer controls", (status, autoStatus) => {
+    expect(visibleActions({ status, autoStatus, actions })).toEqual([actions[2]]);
+    expect(canAnswer({ status })).toBe(false);
   });
 
   it.each([

@@ -800,7 +800,7 @@ function AskDetail({
         </View>
         {actions.length === 0 && menu}
       </View>}
-      {closed && menu}
+      {closed && actions.length === 0 && menu}
     </View>
   );
 }

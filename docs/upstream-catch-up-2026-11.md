@@ -106,13 +106,14 @@ Review-correction verification:
 Re-review confirmed the earlier fixes but found two adjacent integration gaps:
 
 - Scheduled-run attention previously checked only open status, so it could miss a new automatically in-progress ask before a delayed or missed turn-end event and let the host archive the workspace. `attentionForOpenAsks` now also counts automatic holds, without counting explicit holds, closed asks or other owners. `test/schedule-attention.test.ts` creates an ask through the real service and asserts identical attention before and after the real turn-end handler; mixed-status coverage checks counting and exclusions.
-- Closed chat cards still offered controls the server correctly refuses. The shared `canAnswer` predicate now gates reply fields and answer buttons, while closed-card navigation remains available and the server guard is unchanged. `test/run-status.test.ts` asserts reply eligibility for every status and no visible actions for done/dropped cards, including persisted automatic flags.
+- Closed chat cards still offered controls the server correctly refuses. The shared `canAnswer` predicate now gates reply fields and answer buttons, while the server guard is unchanged. A further review caught an overbroad action filter: closed cards must retain `open` actions because they only navigate, rather than sending an answer. `test/run-status.test.ts` now asserts reply eligibility for every status and report navigation—but no send/resolve actions or reply controls—on done/dropped cards, both with and without persisted automatic flags.
 
 Re-review verification:
 
 - `bun run typecheck` exited 0.
 - `bunx vite build` in `preview` exited 0: `✓ 2065 modules transformed.` and `✓ built in 469ms`. The 900.97 kB JavaScript chunk produces the existing non-fatal size warning.
 - Full suite through the machine-wide queue exited 0: `Test Files  21 passed (21)`, `Tests  295 passed (295)`, `Duration  2.19s`.
+- Navigation correction: `bun run typecheck` exited 0, and the full queued suite exited 0: `Test Files  21 passed (21)`, `Tests  299 passed (299)`, `Duration  1.43s`.
 
 ## Activate or roll back
 

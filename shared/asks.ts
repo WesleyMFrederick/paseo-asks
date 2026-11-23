@@ -101,7 +101,7 @@ export function canAnswer(ask: Pick<Ask, "status">): boolean {
 
 /** Actions available in an expanded ask card. */
 export function visibleActions(ask: Pick<Ask, "status" | "autoStatus" | "actions">): Action[] {
-  if (!canAnswer(ask)) return [];
+  if (!canAnswer(ask)) return ask.actions.filter((action) => action.kind === "open");
   return ask.actions.filter((action) => ask.status === "open" || (ask.status === "in_progress" && ask.autoStatus === true) || action.kind !== "send");
 }
 
