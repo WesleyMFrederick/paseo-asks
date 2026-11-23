@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
 import { describe, expect, it } from "vitest";
 import type { Ask } from "../shared/asks";
-import { endsWithQuestion, NUDGE, parseAnswer, REFRESH, shouldNudge } from "../server/nudge";
+import { CLASSIFIER_PROMPT, endsWithQuestion, NUDGE, parseAnswer, REFRESH, shouldNudge } from "../server/nudge";
 import { Outbox, type AgentState, type Courier } from "../server/outbox";
 import { AsksService } from "../server/service";
 import { pickCaller } from "../server/agents";
@@ -21,6 +21,14 @@ const tool = (name: string) =>
     status: "completed",
     error: null,
   }) as unknown as AgentTimelineItem;
+
+describe("ask prompts", () => {
+  it.each([NUDGE, REFRESH, CLASSIFIER_PROMPT])("keeps deferred work in the work queue rather than manufacturing a human ask", (prompt) => {
+    expect(prompt).toMatch(/human.*(?:answer|act|do)/i);
+    expect(prompt).toMatch(/deferred or out-of-scope work.*work queue, not asks/i);
+    expect(prompt).not.toContain("follow-up you recommended or deferred");
+  });
+});
 
 describe("shouldNudge", () => {
   const yes = async () => true;
@@ -189,8 +197,8 @@ describe("refresh", () => {
     expect(sent).toEqual([REFRESH]);
   });
 
-  it("waits for a running agent and does not queue the same request twice", async () => {
-    const { sent, outbox, service } = setup("running");
+  it.each(["running", "steerable"] as const)("waits for a %s agent and does not queue the same request twice", async (state) => {
+    const { sent, outbox, service } = setup(state);
     expect(await service.refresh("agent")).toEqual({ sent: false });
     await service.refresh("agent");
     expect(sent).toEqual([]);

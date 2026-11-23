@@ -16,11 +16,12 @@ import { isWorking, Outbox, type Courier } from "./server/outbox";
 import { checkFilePaths, diskPathEnv } from "./server/file-paths";
 import { dataDir } from "./server/paths";
 import { isAsksPermission } from "./server/permissions";
+import { RunStatus, type FlipLogEntry } from "./server/run-status";
 import { AsksService, instructions, TOOLS, type OwnerState } from "./server/service";
 import { AskStore } from "./server/store";
 import { attentionForOpenAsks } from "./server/schedule-attention";
 import { PrWatcher } from "./server/watcher";
-import { activeWorkspaces, isBackground } from "./server/workspaces";
+import { activeWorkspaces, asksForSurfaces, isBackground } from "./server/workspaces";
 import { displaySettings, reviewSettings } from "./shared/settings";
 
 const FLUSH_EVERY_MS = 20_000;
@@ -69,9 +70,7 @@ export default function contribute(server: PluginServerContext) {
       const handle = requirePaseo().agents.ref(agentId);
       const found = await handle.refresh();
       if (!found || handle.archivedAt) return "gone";
-      if (handle.status !== "running" && handle.status !== "initializing") return "idle";
-      // COMPAT(supportsSteering): hosts before fullstackhouse/paseo#115 omit it; those wait for the turn to end.
-      return handle.capabilities?.supportsSteering ? "steerable" : "running";
+      return handle.status === "running" || handle.status === "initializing" ? "running" : "idle";
     },
     async send(agentId, text, messageId) {
       await requirePaseo()
@@ -92,6 +91,10 @@ export default function contribute(server: PluginServerContext) {
   });
   // Every human action on an ask, and every admin reassign/close, applied or refused, one JSON line each.
   const actLog = join(dir, "act-log.jsonl");
+  // Every automatic open/in_progress flip, one JSON line each.
+  const flipLog = join(dir, "status-flip-log.jsonl");
+  const logFlip = (entry: FlipLogEntry) => appendFileSync(flipLog, `${JSON.stringify(entry)}\n`);
+  const runStatus = new RunStatus(store, logFlip);
   // Admin moves and closes: "closed" (session ended) is told apart from "gone" (unknown or archived).
   const ownerState = async (agentId: string): Promise<OwnerState> => {
     const handle = requirePaseo().agents.ref(agentId);
@@ -113,6 +116,7 @@ export default function contribute(server: PluginServerContext) {
     },
     (entry) => appendFileSync(actLog, `${JSON.stringify(entry)}\n`),
     ownerState,
+    logFlip,
   );
   const lastOutputs = new LastOutputs(dir);
   const ghPath = findGh();
@@ -143,9 +147,15 @@ export default function contribute(server: PluginServerContext) {
     capture(api);
     if (agent.workspaceId && !helpers.has(agent.id)) agents.remember(agent.id, agent.workspaceId);
   });
+  server.on("agent.turn_started", async ({ agent }, { paseo: api }) => {
+    capture(api);
+    if (helpers.has(agent.id)) return;
+    await runStatus.turnStarted(agent.id).catch((error) => console.error("[asks] turn_started status flip failed", error));
+  });
   server.on("agent.turn_ended", async ({ agent, outcome }, { paseo: api }) => {
     capture(api);
     if (helpers.has(agent.id)) return;
+    await runStatus.turnEnded(agent.id).catch((error) => console.error("[asks] turn_ended status flip failed", error));
     void outbox.flush(agent.id);
     const timeline = await latestTurn(api.agents.ref(agent.id).timeline);
     lastOutputs.record(agent.id, timeline);
@@ -164,11 +174,10 @@ export default function contribute(server: PluginServerContext) {
     const openIds = new Set(openAsks.map((ask) => ask.id));
     void shouldNudge(timeline, (id) => openIds.has(id), classifierFor(agent.id), openAsks)
       .then(async (nudge) => {
-        // The classifier takes a few seconds. If the human has moved on, steer the reminder into the new
-        // turn; only an agent that can't take a steer is left alone.
+        // The classifier takes a few seconds. Leave the agent alone if a new turn has started.
         if (!nudge) return;
         const state = await courier.state(agent.id);
-        if (state === "running" || state === "gone") return;
+        if (isWorking(state) || state === "gone") return;
         service.message(agent.id, workspaceId, NUDGE);
         await outbox.flush(agent.id);
       })
@@ -231,7 +240,7 @@ export default function contribute(server: PluginServerContext) {
     // Background and archived asks remain available by workspace, but stay out of the global queue.
     const live = await activeWorkspaces(api);
     return {
-      asks: asks.filter((ask) => live.has(ask.workspaceId)),
+      ...asksForSurfaces(asks, live),
       latestRelays: latest,
       workspaceNames: Object.fromEntries(live),
     };
@@ -298,6 +307,9 @@ export default function contribute(server: PluginServerContext) {
   });
   const timer = setInterval(() => {
     if (paseo && outbox.pending().length) void outbox.flush();
+    if (paseo) void runStatus
+      .reconcile(async (agentId) => isWorking(await courier.state(agentId)) ? "running" : "idle")
+      .catch((error) => console.error("[asks] status reconcile failed", error));
   }, FLUSH_EVERY_MS);
 
   const prTimer = setInterval(() => void watcher?.refresh(), PR_EVERY_MS);

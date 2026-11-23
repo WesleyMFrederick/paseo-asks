@@ -18,6 +18,7 @@ import {
   prPreviewOf,
   readerAsks,
   refreshAsks,
+  visibleActions,
   type Action,
   type Ask,
   type Deployment,
@@ -332,7 +333,7 @@ export function AgentAsks(props: {
   if (asks.isPending) return <Message styles={styles} text="Loading asks…" />;
   if (asks.isError)
     return <Message styles={styles} text={`Could not load asks: ${asks.error.message}`} danger />;
-  const readable = readerAsks(asks.data.asks, agentId);
+  const readable = readerAsks(asks.data.composerAsks ?? asks.data.asks, agentId);
   const initialExpanded = firstExpanded(readable, agentId, asks.data.latestRelays?.[agentId]);
   const expanded = toggled ?? new Set(initialExpanded);
   // The newest relay leads its section, in the order the reply pointed at its asks.
@@ -674,7 +675,7 @@ function AskDetail({
       ? []
       : [{ id: "done", label: "Mark done", icon: "CircleCheck", onSelect: () => mutation.mutate({ verb: "done" }) }]),
     // An ask you already answered has nothing left to settle: only its live discussion reopens.
-    ...(ask.orphaned || !(ask.status === "open" || ask.discussionAgentId)
+    ...(ask.orphaned || !(ask.status === "open" || (ask.status === "in_progress" && ask.autoStatus === true) || ask.discussionAgentId)
       ? []
       : [
           {
@@ -701,7 +702,7 @@ function AskDetail({
         ]),
   ];
   const menu = menuItems.length > 0 && <MoreMenu items={menuItems} disabled={busy} styles={styles} />;
-  const actions = ask.status === "open" ? ask.actions : [];
+  const actions = visibleActions(ask);
 
   return (
     <View style={styles.detail}>

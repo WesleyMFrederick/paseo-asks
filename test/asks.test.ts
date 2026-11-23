@@ -3,8 +3,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { isWorking, Outbox, type AgentState, type Courier } from "../server/outbox";
-import { AskAlreadyClosedError, AskOwnerLiveError, AsksService, AskTargetNotLiveError, BACKGROUND_SKIP, type ActLogEntry, type AdminLogEntry, type OwnerState } from "../server/service";
+import { AskAlreadyClosedError, AskOwnerLiveError, AsksService, AskTargetNotLiveError, BACKGROUND_SKIP, instructions, type ActLogEntry, type AdminLogEntry, type OwnerState } from "../server/service";
 import { AskStore } from "../server/store";
+import { RunStatus } from "../server/run-status";
 import { AskSchema, firstExpanded, latestRelays, OPEN_STATUSES, pillLabel, visibleActions, type Ask } from "../shared/asks";
 
 class FakeCourier implements Courier {
@@ -65,12 +66,12 @@ describe("asks", () => {
       kind: "followup",
       title: "File issue for retention switch",
     });
-    expect(first.text).toMatch(/^A1 \[open\] decision/);
+    expect(first.text).toMatch(/^A1 \[in_progress\] decision/);
     expect(second.text).toMatch(/^A2 /);
     expect(new AskStore(dir).list(WS).map((ask) => ask.id)).toEqual(["A1", "A2"]);
   });
 
-  it("Given legacy run-state markers, When loaded, Then only automatic in-progress asks reopen and the migration persists once", async () => {
+  it("Given persisted automatic statuses, When loaded, Then statuses and markers survive without rewriting the file", async () => {
     // Given
     await service.callTool(AGENT, "ask_create", decision);
     const original = store.get(WS, "A1")!;
@@ -79,30 +80,168 @@ describe("asks", () => {
     const cases = [
       { status: "in_progress", autoStatus: true },
       { status: "in_progress", autoStatus: false },
-      { status: "in_progress" },
+      { status: "in_progress", autoStatus: undefined },
       { status: "open", autoStatus: true },
       { status: "done", autoStatus: true },
       { status: "dropped", autoStatus: true },
     ] as const;
-    const asks = cases.map((legacy, index) => ({ ...original, id: `A${index + 1}`, outcome, relayedTo, ...legacy }));
+    const asks = cases.map((state, index) => ({ ...original, id: `A${index + 1}`, outcome, relayedTo, ...state }));
     const path = join(dir, "workspaces", `${encodeURIComponent(WS)}.json`);
-    writeFileSync(path, JSON.stringify({ nextId: 7, asks }));
-    const revived = new AskStore(dir);
-    const statuses = ["open", "in_progress", "in_progress", "open", "done", "dropped"] as const;
-    const expected = statuses.map((status, index) => ({ ...original, id: `A${index + 1}`, outcome, relayedTo, status }));
+    const persisted = `${JSON.stringify({ nextId: 7, asks })}\n\n`;
+    writeFileSync(path, persisted);
 
     // When
+    const revived = new AskStore(dir);
     const loaded = revived.list(WS);
 
     // Then
-    expect(loaded).toEqual(expected);
-    expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({ nextId: 7, asks: expected });
-    // Preserve unusual whitespace to detect any rewrite on a cached read or a later process's first read.
-    const persisted = `${readFileSync(path, "utf8")}\n\n`;
-    writeFileSync(path, persisted);
-    expect(revived.list(WS)).toEqual(expected);
-    expect(new AskStore(dir).list(WS)).toEqual(expected);
+    expect(loaded).toEqual(asks);
+    expect(loaded.map((ask) => AskSchema.parse(ask).autoStatus)).toEqual(cases.map((state) => state.autoStatus));
+    expect(revived.list(WS)).toEqual(asks);
+    expect(new AskStore(dir).list(WS)).toEqual(asks);
     expect(readFileSync(path, "utf8")).toBe(persisted);
+  });
+
+  it.each([{ title: "Updated title" }, { status: "in_progress" }])("Given a body, When updating only $title$status, Then the body survives in memory and on disk", async (patch) => {
+    // Given
+    const body = "Keep **these facts**.";
+    await service.callTool(AGENT, "ask_create", { ...decision, body });
+    // When
+    const result = await service.callTool(AGENT, "ask_update", { id: "A1", ...patch });
+    // Then
+    expect(result.isError).toBeUndefined();
+    expect(store.get(WS, "A1")?.body).toBe(body);
+    expect(new AskStore(dir).get(WS, "A1")?.body).toBe(body);
+  });
+
+  it("Given an existing body, When a supplied empty body is checked, Then it clears the body", async () => {
+    // Given
+    await service.callTool(AGENT, "ask_create", { ...decision, body: "Old facts" });
+    // When
+    const result = await service.callTool(AGENT, "ask_update", { id: "A1", body: "" });
+    // Then
+    expect(result.isError).toBeUndefined();
+    expect(new AskStore(dir).get(WS, "A1")?.body).toBe("");
+  });
+
+  it.each([true, false])("Given review changes enabled=%s, When reading instructions, Then deferred work goes to the work queue and only human needs become asks", (actOnReviewChanges) => {
+    // Given / When
+    const text = instructions({ actOnReviewChanges });
+    // Then
+    expect(text).toContain("Put deferred or out-of-scope work in the work queue");
+    expect(text).toContain("Create asks only when you need a human answer or action");
+    expect(text).toContain("Respect instructions not to offer follow-up work");
+    expect(text).not.toContain("Follow-ups count even when nothing blocks you");
+    expect(text).not.toContain("Instructions against offering more work in your reply do not apply");
+  });
+
+  it("Given an owner tool call, When creating an ask, Then it starts automatically in progress and logs the flip through constructor argument eight", async () => {
+    // Given
+    const log = vi.fn();
+    const flipLog = vi.fn();
+    const owner = new AsksService(store, outbox, async () => WS, undefined, undefined, log, async () => "running", flipLog);
+    // When
+    const result = await owner.callTool(AGENT, "ask_create", { ...decision, body: "Facts" });
+    // Then
+    const ask = new AskStore(dir).get(WS, "A1")!;
+    expect(result.text).toMatch(/^A1 \[in_progress\]/);
+    expect(ask).toMatchObject({ status: "in_progress", autoStatus: true, body: "Facts" });
+    expect(ask.lastCall).toBeDefined();
+    expect(flipLog).toHaveBeenCalledExactlyOnceWith({ at: ask.createdAt, cause: "owner_call", workspaceId: WS, askId: "A1", ownerAgentId: AGENT, from: "open", to: "in_progress" });
+    expect(log).not.toHaveBeenCalled();
+    await new RunStatus(store, flipLog).turnEnded(AGENT);
+    expect(store.get(WS, "A1")).toMatchObject({ status: "open", autoStatus: false });
+  });
+
+  it("Given an open ask, When the owner requests open or explicitly holds in progress, Then only the automatic state releases at turn end", async () => {
+    // Given
+    const flipLog = vi.fn();
+    const owner = new AsksService(store, outbox, async () => WS, undefined, undefined, undefined, async () => "running", flipLog);
+    const runStatus = new RunStatus(store, () => {});
+    await owner.callTool(AGENT, "ask_create", decision);
+    await runStatus.turnEnded(AGENT);
+    flipLog.mockClear();
+    // When
+    await owner.callTool(AGENT, "ask_update", { id: "A1", status: "open" });
+    // Then
+    expect(store.get(WS, "A1")).toMatchObject({ status: "in_progress", autoStatus: true });
+    expect(flipLog).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ cause: "owner_call", from: "open", to: "in_progress" }));
+    await runStatus.turnEnded(AGENT);
+    expect(store.get(WS, "A1")?.status).toBe("open");
+    // An explicit hold survives body/title changes and turn end.
+    await owner.callTool(AGENT, "ask_update", { id: "A1", status: "in_progress" });
+    await owner.callTool(AGENT, "ask_update", { id: "A1", title: "Still working", body: "Work continues" });
+    await runStatus.turnEnded(AGENT);
+    expect(new AskStore(dir).get(WS, "A1")).toMatchObject({ status: "in_progress", autoStatus: false, body: "Work continues" });
+    expect(flipLog).toHaveBeenCalledTimes(1);
+  });
+
+  it("Given an automatically in-progress ask, When the human sends concurrently twice, Then one send clears automation and owner updates cannot release the hold", async () => {
+    // Given
+    await service.callTool(AGENT, "ask_create", { kind: "followup", title: "Approve", actions: [{ label: "Approve", kind: "send" }] });
+    courier.states.set(AGENT, "running");
+    const observed = store.get(WS, "A1")!;
+    // When
+    const sends = await Promise.allSettled([
+      service.act({ workspaceId: WS, id: "A1", verb: "action", actionId: "a1" }),
+      service.act({ workspaceId: WS, id: "A1", verb: "action", actionId: "a1" }),
+    ]);
+    await service.callTool(AGENT, "ask_update", { id: "A1", body: "Working" });
+    await new RunStatus(store, () => {}).turnEnded(AGENT);
+    // Then
+    expect(sends.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(sends.filter((result) => result.status === "rejected")).toHaveLength(1);
+    expect(await store.flipStatus(observed, "open", false)).toBeNull();
+    expect(new AskStore(dir).get(WS, "A1")).toMatchObject({ status: "in_progress", autoStatus: false, outcome: { label: "Approve", by: "human" } });
+    expect(outbox.pending(AGENT)).toHaveLength(1);
+  });
+
+  it("Given a side chat, When it updates its linked ask to open, Then it does not apply the owner's automatic status or log a flip", async () => {
+    // Given
+    await service.callTool(AGENT, "ask_create", decision);
+    await new RunStatus(store, () => {}).turnEnded(AGENT);
+    await store.update(WS, "A1", { discussionAgentId: "discussion", discussionWorkspaceId: "discussion-ws" }, { touch: false });
+    const flipLog = vi.fn();
+    const discussion = new AsksService(store, outbox, async () => "discussion-ws", undefined, undefined, undefined, undefined, flipLog);
+    // When
+    const result = await discussion.callTool("discussion", "ask_update", { id: "A1", status: "open", body: "Clarified" });
+    // Then
+    expect(result.isError).toBeUndefined();
+    expect(store.get(WS, "A1")).toMatchObject({ status: "open", autoStatus: false, body: "Clarified" });
+    expect(flipLog).not.toHaveBeenCalled();
+  });
+
+  it("Given a queued owner change, When a status flip takes the store lock, Then it refuses the stale snapshot", async () => {
+    // Given
+    await service.callTool(AGENT, "ask_create", decision);
+    const observed = store.get(WS, "A1")!;
+    // When
+    const change = store.update(WS, "A1", { ownerAgentId: "new-owner" }, { touch: false });
+    const flip = store.flipStatus(observed, "open", false);
+    await change;
+    // Then
+    expect(await flip).toBeNull();
+    expect(new AskStore(dir).get(WS, "A1")).toMatchObject({ ownerAgentId: "new-owner", status: "in_progress", autoStatus: true });
+  });
+
+  it("Given an automatic ask linked to a discussion, When the discussion resolves it, Then it succeeds but a human send still prevents a second answer", async () => {
+    // Given
+    await service.callTool(AGENT, "ask_create", { kind: "followup", title: "Approve", actions: [{ label: "Approve", kind: "send" }] });
+    await store.update(WS, "A1", { discussionAgentId: "discussion", discussionWorkspaceId: "discussion-ws" }, { touch: false });
+    const discussion = new AsksService(store, outbox, async () => "discussion-ws");
+    // When
+    const resolved = await discussion.callTool("discussion", "ask_resolve", { id: "A1" });
+    // Then
+    expect(resolved.isError).toBeUndefined();
+    expect(store.get(WS, "A1")?.status).toBe("done");
+    // A new ask has the same automatic state, but a human send consumes its answer.
+    await service.callTool(AGENT, "ask_create", { kind: "followup", title: "Approve next", actions: [{ label: "Approve", kind: "send" }] });
+    await store.update(WS, "A2", { discussionAgentId: "discussion", discussionWorkspaceId: "discussion-ws" }, { touch: false });
+    await service.act({ workspaceId: WS, id: "A2", verb: "action", actionId: "a1" });
+    const second = await discussion.callTool("discussion", "ask_resolve", { id: "A2" });
+    expect(second.isError).toBe(true);
+    expect(second.text).toContain("no longer waits on the human");
+    expect(store.get(WS, "A2")).toMatchObject({ status: "in_progress", autoStatus: false, outcome: { label: "Approve", by: "human" } });
   });
 
   it("rejects a bundled ask on create and update, saving nothing", async () => {
@@ -184,10 +323,14 @@ describe("asks", () => {
     expect(ask.outcome).toMatchObject({ actionId: "a1", label: "Merge (squash)", note: "after lunch", by: "human" });
   });
 
-  it("steers a human's choice into a running turn when the provider can take it", async () => {
+  it("holds a human's choice until idle even when the provider supports steering", async () => {
     await service.callTool(AGENT, "ask_create", decision);
     courier.states.set(AGENT, "steerable");
     await service.act({ workspaceId: WS, id: "A1", verb: "action", actionId: "a1" });
+    await outbox.flush();
+    expect(courier.sent).toEqual([]);
+    expect(outbox.pending(AGENT)).toHaveLength(1);
+    courier.states.set(AGENT, "idle");
     await outbox.flush();
     expect(courier.sent).toHaveLength(1);
     expect(outbox.pending(AGENT)).toEqual([]);
@@ -282,6 +425,8 @@ describe("asks", () => {
       id: "A1",
       actions: [{ label: "I merged it", kind: "resolve" }],
     });
+    expect(store.get(WS, "A1")).toMatchObject({ status: "in_progress", autoStatus: true });
+    await new RunStatus(store, () => {}).turnEnded(AGENT);
     expect(store.get(WS, "A1")!.status).toBe("open");
 
     await service.callTool(AGENT, "ask_update", {
@@ -289,7 +434,9 @@ describe("asks", () => {
       actions: [{ label: "Retry", kind: "send" }],
       status: "in_progress",
     });
-    // Buttons on an in-progress ask can't be clicked, so an explicit in_progress doesn't hide them.
+    // Fresh options release the explicit hold when the owner's turn ends.
+    expect(store.get(WS, "A1")).toMatchObject({ status: "in_progress", autoStatus: true });
+    await new RunStatus(store, () => {}).turnEnded(AGENT);
     expect(store.get(WS, "A1")!.status).toBe("open");
   });
 
@@ -316,6 +463,7 @@ describe("asks", () => {
 
   it("moves an open ask to in progress on a reply, and back to open on new options", async () => {
     await service.callTool(AGENT, "ask_create", decision);
+    await new RunStatus(store, () => {}).turnEnded(AGENT);
     await service.act({ workspaceId: WS, id: "A1", verb: "reply", note: "Why not both?" });
     expect(store.get(WS, "A1")).toMatchObject({ status: "in_progress", outcome: { note: "Why not both?", by: "human" } });
     await outbox.flush();
@@ -325,14 +473,22 @@ describe("asks", () => {
       id: "A1",
       actions: [{ label: "Both", kind: "resolve" }, { label: "Squash only", kind: "resolve" }],
     });
+    expect(store.get(WS, "A1")).toMatchObject({ status: "in_progress", autoStatus: true });
+    await new RunStatus(store, () => {}).turnEnded(AGENT);
     expect(store.get(WS, "A1")!.status).toBe("open");
   });
 
-  it("leaves the status of an ask nobody waits on when the human replies", async () => {
+  it.each(["done", "dropped"] as const)("Given a %s ask, When the human replies, Then nothing changes or reaches the owner", async (status) => {
+    // Given
     await service.callTool(AGENT, "ask_create", decision);
-    await service.callTool(AGENT, "ask_update", { id: "A1", status: "done" });
-    await service.act({ workspaceId: WS, id: "A1", verb: "reply", note: "One more thing" });
-    expect(store.get(WS, "A1")!.status).toBe("done");
+    await store.update(WS, "A1", { status });
+    const before = structuredClone(store.get(WS, "A1"));
+    // When / Then
+    await expect(service.act({ workspaceId: WS, id: "A1", verb: "reply", note: "One more thing" })).rejects.toThrow(`A1 is already ${status}`);
+    expect(store.get(WS, "A1")).toEqual(before);
+    expect(new AskStore(dir).get(WS, "A1")).toEqual(before);
+    expect(courier.sent).toEqual([]);
+    expect(outbox.pending()).toEqual([]);
   });
 
   it("survives a restart with messages still pending", async () => {
@@ -407,18 +563,21 @@ describe("asks", () => {
     await service.callTool(AGENT, "ask_create", { kind: "followup", title: "Second here" });
     await service.act({ workspaceId: "wks_2", id: "A2", verb: "drop" });
     expect(courier.sent.map((sent) => sent.agentId)).toEqual(["agent-2"]);
-    expect(store.get(WS, "A2")?.status).toBe("open");
+    expect(store.get(WS, "A2")?.status).toBe("in_progress");
   });
 
   it("lists active asks (open and in progress) by default, labelled by status", async () => {
     await service.callTool(AGENT, "ask_create", decision);
     await service.callTool(AGENT, "ask_create", { kind: "question", title: "Other" });
     await service.callTool(AGENT, "ask_create", { kind: "followup", title: "Later" });
+    await new RunStatus(store, () => {}).turnEnded(AGENT);
     await service.callTool(AGENT, "ask_update", { id: "A2", status: "dropped" });
     await service.callTool(AGENT, "ask_update", { id: "A3", status: "in_progress" });
     const active = ["A1 [open] decision: Squash-only merges?", "A3 [in_progress] followup: Later"];
     expect((await service.callTool(AGENT, "ask_list", {})).text.split("\n")).toEqual(active);
     expect((await service.callTool(AGENT, "ask_list", { status: "active" })).text.split("\n")).toEqual(active);
+    // Existing clients used "open" to include both open and in-progress asks.
+    expect((await service.callTool(AGENT, "ask_list", { status: "open" })).text.split("\n")).toEqual(active);
     expect(
       (await service.callTool(AGENT, "ask_list", { status: "all" })).text.split("\n"),
     ).toHaveLength(3);
@@ -461,7 +620,7 @@ describe("asks", () => {
     });
   });
 
-  it("Given an open ask, When its send action is used, Then unsent actions were visible and sent actions are hidden", async () => {
+  it("Given an automatic in-progress ask, When its send action is used, Then unsent actions were visible and sent actions are hidden", async () => {
     // Given
     await service.callTool(AGENT, "ask_create", {
       kind: "followup", title: "Approve follow-up",
@@ -479,7 +638,7 @@ describe("asks", () => {
     // Given
     await service.callTool(AGENT, "ask_create", { kind: "followup", title: "Approve", actions: [{ label: "Approve", kind: "send" }] });
     courier.states.set(AGENT, "running");
-    expect(store.get(WS, "A1")?.status).toBe("open");
+    expect(store.get(WS, "A1")).toMatchObject({ status: "in_progress", autoStatus: true });
     // When
     await Promise.all([
       service.relay({ readerAgentId: "reader-1", asks: [{ workspaceId: WS, id: "A1" }] }),
@@ -726,13 +885,14 @@ describe("asks", () => {
       expect(moved).toEqual(copy);
       expect(copy).toMatchObject({ ownerAgentId: TARGET, status: "open", title: original.title, actions: original.actions });
       expect(copy?.outcome).toBeUndefined();
+      expect(copy?.autoStatus).toBeUndefined();
       const old = new AskStore(dir).get(WS, "A1");
       expect(from).toEqual(old);
       expect(old?.status).toBe("dropped");
       expect(old?.outcome).toMatchObject({ by: "agent", note: `Moved to ${OTHER_WS}/A1 (owner ${AGENT} closed) by cos-1: owner session ended` });
       expect(courier.sent).toEqual([{ agentId: TARGET, text: expect.stringMatching(/^\[asks\] A1 \(Squash-only merges\?\) is now yours\. It moved from wks_1\/A1/), messageId: expect.any(String) }]);
       expect(log).toHaveBeenCalledTimes(1);
-      expect(log).toHaveBeenCalledWith(expect.objectContaining({ verb: "reassign", ownerAgentId: AGENT, ownerState: "closed", movedTo: `${OTHER_WS}/A1`, before: "open", after: "dropped" }));
+      expect(log).toHaveBeenCalledWith(expect.objectContaining({ verb: "reassign", ownerAgentId: AGENT, ownerState: "closed", movedTo: `${OTHER_WS}/A1`, before: "in_progress", after: "dropped" }));
       expect(log.mock.calls[0]![0].error).toBeUndefined();
     });
 
@@ -746,6 +906,7 @@ describe("asks", () => {
       expect(store.list(WS)).toHaveLength(1);
       expect(moved.outcome).toBeUndefined();
       expect(store.get(WS, "A1")).toMatchObject({ ownerAgentId: NEIGHBOR, status: "open" });
+      expect(store.get(WS, "A1")?.autoStatus).toBeUndefined();
       expect(log).toHaveBeenCalledTimes(1);
       expect(log).toHaveBeenCalledWith(expect.objectContaining({ verb: "reassign", movedTo: `${WS}/A1`, after: "open" }));
     });
@@ -796,7 +957,7 @@ describe("asks", () => {
       expect(courier.sent).toEqual([]);
       expect(outbox.pending()).toEqual([]);
       expect(log).toHaveBeenCalledTimes(1);
-      expect(log).toHaveBeenCalledWith(expect.objectContaining({ verb: "close", by: "cos-1", reason: "superseded by A7", ownerState: "closed", before: "open", after: "done" }));
+      expect(log).toHaveBeenCalledWith(expect.objectContaining({ verb: "close", by: "cos-1", reason: "superseded by A7", ownerState: "closed", before: "in_progress", after: "done" }));
     });
 
     it("Given an already-done ask, When it is closed, Then it throws AskAlreadyClosedError and logs the refusal", async () => {

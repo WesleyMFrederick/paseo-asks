@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 import { discuss, Discussions, type DiscussDeps } from "../server/discuss";
 import { Outbox, type Courier } from "../server/outbox";
+import { RunStatus } from "../server/run-status";
 import { AsksService } from "../server/service";
 import { AskStore } from "../server/store";
 import { discussionTitle, showsIn, waitingByWorkspace, workspaceAsks } from "../shared/asks";
@@ -106,6 +107,7 @@ describe("Discuss", () => {
         { label: "squash-only", kind: "resolve", recommended: true },
       ],
     });
+    await new RunStatus(store, () => undefined).turnEnded(OWNER);
     return store.get(WS, "A1")!;
   };
   const deps = (paseo: DiscussDeps["paseo"]): DiscussDeps => ({
@@ -276,8 +278,8 @@ describe("Discuss", () => {
     const ask = await decision();
     await discuss(deps(fakePaseo(created)), ask);
     const result = await service.callTool(EXPLAINER, "ask_create", { kind: "question", title: "Which region?" });
-    expect(result.text).toMatch(/^A2 \[open\]/);
-    expect(store.get(EXPLAIN_WS, "A2")).toMatchObject({ ownerAgentId: EXPLAINER });
+    expect(result.text).toMatch(/^A2 \[in_progress\]/);
+    expect(store.get(EXPLAIN_WS, "A2")).toMatchObject({ ownerAgentId: EXPLAINER, autoStatus: true });
     expect(store.get(WS, "A1")!.status).toBe("open");
   });
 

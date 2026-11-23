@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { activeWorkspaces, isBackground } from "../server/workspaces";
+import { activeWorkspaces, asksForSurfaces, isBackground } from "../server/workspaces";
+import { firstExpanded, pillLabel, readerAsks } from "../shared/asks";
 
 type Api = Parameters<typeof activeWorkspaces>[0];
 
@@ -58,5 +59,24 @@ describe("isBackground", () => {
         "wks_1",
       ),
     ).toBe(false);
+  });
+});
+
+describe("archived relay sources", () => {
+  it("keeps a relayed ask in the recipient's pill and expansion, but out of the global queue", () => {
+    const at = "2026-11-23T00:00:00Z";
+    const relay = {
+      id: "A1", workspaceId: "archived", ownerAgentId: "owner", status: "open" as const,
+      relayedTo: [{ agentId: "reader", at, batch: "latest", index: 0 }],
+    };
+    const active = { ...relay, id: "A2", workspaceId: "live", relayedTo: [] };
+    const unrelayed = { ...relay, id: "A3", relayedTo: [] };
+    const { asks, composerAsks } = asksForSurfaces([relay, active, unrelayed], new Map([["live", "Live"]]));
+
+    expect(asks).toEqual([active]);
+    expect(readerAsks(composerAsks, "reader")).toEqual([relay]);
+    expect(pillLabel(composerAsks, "reader")).toBe("Asks · 1");
+    expect(firstExpanded(composerAsks, "reader")).toEqual(["archived/A1"]);
+    expect(readerAsks(composerAsks, "unrelated")).toEqual([]);
   });
 });

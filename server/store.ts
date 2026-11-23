@@ -8,12 +8,12 @@ interface WorkspaceFile {
   asks: Ask[];
 }
 
-export type NewAsk = Pick<Ask, "workspaceId" | "ownerAgentId" | "kind" | "title" | "body" | "links" | "subscribe" | "heldReview" | "lastCall"> & {
+export type NewAsk = Pick<Ask, "workspaceId" | "ownerAgentId" | "kind" | "title" | "body" | "links" | "subscribe" | "heldReview" | "lastCall"> & Partial<Pick<Ask, "status" | "autoStatus">> & {
   actions: Omit<Action, "id">[];
 };
 
 export type AskPatch = Partial<
-  Pick<Ask, "title" | "body" | "links" | "status" | "outcome" | "orphaned" | "ownerAgentId" | "subscribe" | "pr" | "discussionAgentId" | "discussionWorkspaceId" | "remindedAt" | "lastCall" | "relayedTo">
+  Pick<Ask, "title" | "body" | "links" | "status" | "autoStatus" | "outcome" | "orphaned" | "ownerAgentId" | "subscribe" | "pr" | "discussionAgentId" | "discussionWorkspaceId" | "remindedAt" | "lastCall" | "relayedTo">
 > & {
   actions?: Omit<Action, "id">[];
 };
@@ -47,7 +47,7 @@ export class AskStore {
         ...input,
         id: `A${file.nextId++}`,
         actions: withIds(input.actions),
-        status: "open",
+        status: input.status ?? "open",
         createdAt: at,
         updatedAt: at,
       };
@@ -83,14 +83,27 @@ export class AskStore {
     });
   }
 
+  /** Compare under the workspace lock; an asynchronous owner lookup must not undo newer human or owner changes. */
+  flipStatus(expected: Ask, status: Ask["status"], autoStatus: boolean): Promise<Ask | null> {
+    return this.mutate(expected.workspaceId, (file) => {
+      const current = file.asks.find((ask) => ask.id === expected.id);
+      if (!current || current.status !== expected.status || current.ownerAgentId !== expected.ownerAgentId ||
+        current.updatedAt !== expected.updatedAt || current.autoStatus !== expected.autoStatus) return null;
+      current.status = status;
+      current.autoStatus = autoStatus;
+      return current;
+    });
+  }
+
   /** Check the ask is still sendable and mark it sent inside the workspace lock; of two concurrent sends, one is refused. */
   claimSend(workspaceId: string, id: string, outcome?: Ask["outcome"]): Promise<Ask> {
     return this.mutate(workspaceId, (file) => {
       const current = file.asks.find((ask) => ask.id === id);
       if (!current) throw new Error(`No ask ${id} in this workspace`);
       if (!OPEN_STATUSES.includes(current.status)) throw new Error(`${id} is already ${current.status}; nothing was changed or sent`);
-      if (current.status === "in_progress") throw new Error(`${id} send action was already sent; nothing was changed or sent`);
+      if (current.status === "in_progress" && !current.autoStatus) throw new Error(`${id} send action was already sent; nothing was changed or sent`);
       current.status = "in_progress";
+      current.autoStatus = false;
       current.outcome = outcome;
       current.updatedAt = this.now().toISOString();
       return current;
@@ -133,7 +146,7 @@ export class AskStore {
       if (!OPEN_STATUSES.includes(current.status)) throw new Error(`${from.id} is already ${current.status}; nothing was changed`);
       const at = this.now().toISOString();
       if (from.workspaceId === to.workspaceId) {
-        const next: Ask = { ...current, ownerAgentId: to.ownerAgentId, status: "open", orphaned: undefined, updatedAt: at };
+        const next: Ask = { ...current, ownerAgentId: to.ownerAgentId, status: "open", orphaned: undefined, autoStatus: undefined, updatedAt: at };
         source.asks[index] = next;
         return { moved: next, from: next };
       }
@@ -179,16 +192,6 @@ export class AskStore {
     if (cached) return cached;
     const path = this.path(workspaceId);
     const file: WorkspaceFile = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : { nextId: 1, asks: [] };
-    // Old run-state flips were not human answers: restore those buttons once, then discard the legacy marker.
-    const legacy = file.asks as (Ask & { autoStatus?: boolean })[];
-    if (legacy.some((ask) => Object.hasOwn(ask, "autoStatus"))) {
-      file.asks = legacy.map(({ autoStatus, ...ask }) => ({
-        ...ask,
-        status: ask.status === "in_progress" && autoStatus === true ? "open" : ask.status,
-      }));
-      writeFileSync(`${path}.tmp`, JSON.stringify(file, null, 2));
-      renameSync(`${path}.tmp`, path);
-    }
     this.cache.set(workspaceId, file);
     return file;
   }

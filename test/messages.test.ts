@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 import { Outbox, type Courier } from "../server/outbox";
+import { RunStatus } from "../server/run-status";
 import { AsksService } from "../server/service";
 import { AskStore } from "../server/store";
 import { parseAsksMessage } from "../shared/messages";
@@ -41,6 +42,7 @@ describe("parseAsksMessage", () => {
         { label: "Merge v1.2", kind: "send", prompt: "Merge PR #30. Then tag it." },
       ],
     });
+    await new RunStatus(store, () => undefined).turnEnded(OWNER);
     return store.list(WS).find((ask) => ask.id === "A1")!;
   };
   const last = async () => {

@@ -69,6 +69,8 @@ export const AskSchema = z.object({
   outcome: OutcomeSchema.optional(),
   /** The owning agent is gone; nobody will hear about a resolution. */
   orphaned: z.boolean().optional(),
+  /** The plugin set in_progress while the owner runs; human sends and explicit in_progress clear it. */
+  autoStatus: z.boolean().optional(),
   /** Tell the owner when the linked PR changes (merged, closed, checks, review). */
   subscribe: z.boolean().optional(),
   /** Raised by the plugin for requested changes the human holds back; its PR is not polled for it. */
@@ -93,8 +95,8 @@ export type Ask = z.infer<typeof AskSchema>;
 export const OPEN_STATUSES: readonly Ask["status"][] = ["open", "in_progress"];
 
 /** Actions available in an expanded ask card. */
-export function visibleActions(ask: Pick<Ask, "status" | "actions">): Action[] {
-  return ask.actions.filter((action) => ask.status === "open" || action.kind !== "send");
+export function visibleActions(ask: Pick<Ask, "status" | "autoStatus" | "actions">): Action[] {
+  return ask.actions.filter((action) => ask.status === "open" || (ask.status === "in_progress" && ask.autoStatus === true) || action.kind !== "send");
 }
 
 /** The asks an agent's composer pill counts and its popover lists: the ones it owns plus the ones relayed to it. */
@@ -257,6 +259,8 @@ export const listAsks = defineRpc({
   input: z.object({ workspaceId: z.string().optional(), includeClosed: z.boolean().optional() }),
   output: z.object({
     asks: z.array(AskSchema),
+    /** Active asks plus inactive asks relayed to an agent, for composer pills and their panels only. */
+    composerAsks: z.array(AskSchema).optional(),
     latestRelays: z.record(z.string(), RelayStampSchema).optional(),
     /** Workspace id → display name, filled when listing every workspace. */
     workspaceNames: z.record(z.string(), z.string()).optional(),
@@ -304,7 +308,7 @@ export function discussionTitle(ask: Pick<Ask, "id" | "title">): string {
   return ask.title.length + head.length <= max ? head + ask.title : `${head}${ask.title.slice(0, max - head.length - 1).trimEnd()}…`;
 }
 
-/** Ask an agent to bring its asks up to date. Sent now if it is idle or can take a steer, otherwise when its turn ends. */
+/** Ask an agent to bring its asks up to date. Sent now if idle, otherwise when its turn ends. */
 export const refreshAsks = defineRpc({
   name: "asks.refresh",
   input: z.object({ agentId: z.string() }),

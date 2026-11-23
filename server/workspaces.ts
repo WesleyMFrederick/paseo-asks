@@ -1,4 +1,16 @@
 import type { PaseoApi } from "@getpaseo/client";
+import type { Ask } from "../shared/asks";
+
+/** The global queue hides archived sources; a relay remains available in its recipient's composer. */
+export function asksForSurfaces<T extends Pick<Ask, "workspaceId" | "relayedTo">>(
+  asks: readonly T[],
+  live: ReadonlyMap<string, string>,
+): { asks: T[]; composerAsks: T[] } {
+  return {
+    asks: asks.filter((ask) => live.has(ask.workspaceId)),
+    composerAsks: asks.filter((ask) => live.has(ask.workspaceId) || !!ask.relayedTo?.length),
+  };
+}
 
 const PAGE = 200;
 

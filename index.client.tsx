@@ -191,9 +191,9 @@ function contributePills(client: PluginClientContext): () => void {
 
   const refreshCounts = async () => {
     // Closed asks too: a workspace that ever had an ask reports "Nothing waiting" rather than nothing.
-    const { asks } = await client.rpc(listAsks, { includeClosed: true });
+    const { asks, composerAsks } = await client.rpc(listAsks, { includeClosed: true });
     for (const [agentId, { pill }] of pills) {
-      pill.update(pillFace(asks, agentId));
+      pill.update(pillFace(composerAsks ?? asks, agentId));
     }
     // Every workspace with asks, even one whose agents are gone, plus ones already reported, so a count drops to 0.
     const summary = workspaceAsks(asks, snoozedWorkspaceIds());

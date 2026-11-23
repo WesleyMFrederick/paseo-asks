@@ -13,7 +13,7 @@ Asks is a [Paseo](https://paseo.sh) plugin. It lifts what your agents need from 
 ## What you can do with an ask
 
 - **Pick an option.** A decision's options are buttons below the ask, and the agent's recommendation is the highlighted one. The agent gets `[asks] A3 resolved: b: squash-only`.
-- **Hand work back.** A PR or follow-up offers actions such as "Merge (squash)". Pressing one sends the agent that exact instruction and shows the ask as *in progress*, with what you chose, until the agent closes it. An in-progress ask hides its buttons, so it goes back to waiting on you when the agent gives it new actions, when the agent is archived, or after a day with the agent not running. An agent whose turn ends while it holds an in-progress ask gets one reminder to reopen it if the next move is yours.
+- **Hand work back.** A PR or approved follow-up offers actions such as "Merge (squash)". Pressing one records the choice, queues that instruction until the owner is idle, and holds the ask *in progress* until the agent closes or updates it. A sent ask hides send buttons; an ask that is only automatically in progress while its owner runs keeps unsent actions available.
 - **Reply.** The field under the buttons sends the agent your own answer (Enter on desktop). Text in it also goes along as a note with any button or menu item.
 - **More (⋯).** *Mark done*, *Discuss*, *Show in chat* and *Drop ask*, in the host's menu (a bottom sheet on phones). Hosts without a plugin menu show them as text buttons.
 - **Discuss.** Opens a workspace of its own for this one ask, titled *Explain A3: …*: a fresh worktree of the main agent's repo, branched off its default branch, with an agent on the main agent's model that already knows the ask and the main agent's latest reply. It starts by explaining the ask (with the `/explain` skill when installed: the short version with an example, what each option leads to, a recommendation), then takes your questions. It is told to write only in its own worktree (notes, figures) and to only read the main agent's checkout. It runs in the main agent's mode, so that is an instruction, not a sandbox. That workspace's Asks panel and pill list A3 too, with its buttons, so you can answer it right there; anything else the explainer needs from you becomes an ask of its own, numbered after A3. When you settle it in the chat, the explainer closes the ask and the main agent gets the outcome as one message: `[asks] A3 resolved in a side chat: … Summary: …`. A button you press there reaches the main agent as usual, and the explainer is told, so it does not settle the ask again. Meanwhile the ask shows *Being discussed in Explain A3: …*, which jumps there, and Discuss reopens it (pressing it twice while the workspace is being made still gives one). Once you have answered an ask, Discuss only reopens its existing discussion. Archiving the explainer, or the main agent reopening the ask, ends the discussion, and Discuss starts a new one. Where no workspace can be made (the main agent is not in a git repo), Discuss opens a read-only side chat in the ask's own workspace instead; it is not told to raise asks of its own, and is never reminded to.
@@ -37,21 +37,23 @@ PR asks show live status from `gh`: open, merged or closed, checks, review decis
 agent ──stdio MCP──▶ bridge.mjs ──HTTP 127.0.0.1──▶ plugin server ──▶ ~/.paseo/plugin-data/asks/
   ▲                    (inherits PASEO_AGENT_ID,                  │  workspaces/<id>.json, outbox.json
   │                     so every call knows its caller)           │
-  └──── "[asks] …" message, steered into the turn or held ────────┘
+  └──── "[asks] …" message, held until the owner's turn ends ────┘
 ```
 
 - Every agent created after the plugin is installed gets an `asks` MCP server with `ask_create`, `ask_update`, `ask_resolve` and `ask_list`. Its instructions tell the agent when to use them, so no `CLAUDE.md` edit is needed.
 - Agents sometimes ask in chat and skip `ask_create`. When a turn uses no asks tool and names none of its workspace's open asks (for an explainer, the ask it explains counts too), a short-lived child agent on the same provider (its cheapest model) judges whether the reply leaves anything for the human; if so, the plugin sends one `[asks]` reminder. If that check fails, a question mark in the last paragraph decides. A re-shown decision whose card id or title matches a scoped open ask is already recorded and skips the reminder. Its answer is never reminded again.
-- Answers are written to an on-disk outbox first. On providers that take a steer (Claude, Codex, OpenCode, Pi), they join the agent's running turn right away. On others they wait until the turn ends, because a prompt sent mid-turn would interrupt it. Several answers are batched into one message. A plugin restart loses nothing.
+- Answers are written to an on-disk outbox first and held while the owner runs, even when its provider supports steering. Several answers are batched into one message once the owner is idle. A plugin restart loses nothing.
 - If the agent that raised an ask is archived, the ask is marked *orphaned*: you can still close it, and nobody is notified.
 - Every Drop, Done, Reply or option press confirms who heard: the agent was told now, will be told when its current turn ends, or (orphaned) nobody. Acting on an ask that is already done or dropped fails with "A2 is already dropped; nothing was changed or sent", so a second press never re-sends. Each press, applied or refused, is one line in `act-log.jsonl` in the data folder.
 - Ask ids count per workspace: "A2" in one workspace and "A2" in another are different asks with different owners.
 
-## Status says whose move it is
+## Status follows the owner
 
-An `open` ask waits on the human. An `in_progress` ask waits on the agent after the human hands work back. Running or idle turns do not flip the status: upstream's waiting-on-you lifecycle replaces the old local automatic run-state feature. Giving the ask new actions reopens it; upstream also reconciles abandoned in-progress asks.
+The plugin sets an ask `in_progress` while its owner runs and `open` when that owner becomes idle. Turn events apply the change immediately; reconciliation checks for missed events every 20 seconds. New asks start automatically in progress because the owner creates them during a turn.
 
-The older auto-status design and result records remain historical evidence, not current behavior. See [the upstream catch-up decisions](docs/upstream-catch-up-2026-11.md).
+Automatically in-progress asks keep their action buttons. A human send claims the ask under the store lock and clears its `autoStatus` flag, hiding send buttons and preventing duplicate sends. An explicitly held in-progress ask also stays held across turn boundaries. Automatic flips recheck the observed status, flag, owner and update time under the lock.
+
+Each automatic flip is recorded in `status-flip-log.jsonl`. Deferred or out-of-scope work goes in the work queue; asks are only for things the human needs to answer or do. See [the upstream catch-up decisions](docs/upstream-catch-up-2026-11.md).
 
 ## Install
 
@@ -96,7 +98,7 @@ cd preview && npm install && npm run dev   # the UI with sample data, at localho
 - **Agents report asks themselves.** Nothing reads transcripts to find them: only the agent knows what it is waiting on.
 - **Four fixed action kinds** (`send`, `resolve`, `open`, plus the built-in Discuss). Agents supply labels and prompts, never arbitrary behaviour.
 - **One writer per checkout.** Work goes back to the main agent. A discussion is told never to touch its checkout (the fallback side chat is also read-only by mode) and ends with an outcome on the ask. Only the agent linked on the ask can act on it from another workspace.
-- **Push, never interrupting.** Answers reach the agent as prompts from a disk outbox, steered into a running turn or held until it ends.
+- **Push, never interrupting.** Answers reach the agent as prompts from a disk outbox only after its running turn ends, even when its provider supports steering.
 - **External events only if subscribed,** so polling `gh` never wakes an agent for nothing.
 
 ## Limits

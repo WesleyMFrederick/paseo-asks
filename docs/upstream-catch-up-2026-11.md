@@ -14,7 +14,7 @@ The inventory is `git log --reverse upstream/main..9061043`, including merge com
 
 | Local commit | Decision | Reason |
 |---|---|---|
-| `a0f94dc` refuse closed acts; report delivery | adapted | Preserve closed-ask refusal, delivery feedback and action logging while using upstream steering and waiting-on-you lifecycle. |
+| `a0f94dc` refuse closed acts; report delivery | adapted | Preserve refusal of every action on a closed ask, delivery feedback and action logging with the upstream card interfaces; answers still wait for idle. |
 | `da2d6cd` full composer ask | dropped (covered by upstream [#69](https://github.com/fullstackhouse/paseo-asks/pull/69), [#71](https://github.com/fullstackhouse/paseo-asks/pull/71)) | Use upstream live chat cards and simplified full-content cards instead of the older composer-only rendering. |
 | `79445ad` drop/full-view results | kept | Retain the historical verification record. |
 | `2e6274d` named toast; wrapped code | adapted | Preserve action-specific delivery feedback; host Markdown replaces the plugin renderer and its wrapping patch. |
@@ -33,24 +33,24 @@ The inventory is `git log --reverse upstream/main..9061043`, including merge com
 | `95a6028` wide/phone sign-off | kept | Retain the historical user sign-off without treating it as fresh catch-up verification. |
 | `03dba06` recorded-card nudge suppression | adapted | Keep decision-id/title matching, scoped to relevant asks, alongside upstream [#68](https://github.com/fullstackhouse/paseo-asks/pull/68) workspace-aware ids and asynchronous classifier. |
 | `3c5338b` merge main into UI branch | kept | Preserve merge ancestry; its constituent behavior is classified separately. |
-| `4df7b7a` automatic run-state status | dropped (covered by upstream [#76](https://github.com/fullstackhouse/paseo-asks/pull/76)) | Upstream's human-wait lifecycle replaces automatic running/idle flips; delete the old module, hooks, flags and obsolete tests. |
-| `61604b2` merge automatic status | dropped (covered by upstream [#76](https://github.com/fullstackhouse/paseo-asks/pull/76)) | Keep ancestry but not the superseded auto-status implementation. |
-| `2c8c92f` auto-status live results | kept | Preserve historical evidence; README explicitly marks the old design superseded. |
+| `4df7b7a` automatic run-state status | kept | Restore the owner's automatic running/idle flips: upstream [#76](https://github.com/fullstackhouse/paseo-asks/pull/76) is not observably equivalent and cannot replace the harness contract. |
+| `61604b2` merge automatic status | kept | Preserve ancestry and the automatic-status behavior the harness relies on. |
+| `2c8c92f` auto-status live results | kept | Preserve the historical evidence for the retained automatic-status behavior. |
 | `7ea8f59` invalidate cached PR on relink | kept | Preserve immediate store invalidation; upstream [#53](https://github.com/fullstackhouse/paseo-asks/pull/53) separately fixes watcher comparisons, so the defenses complement each other. |
 | `1fafb92` relayed asks | kept | Upstream's discussion workspace is not a general relay; keep persisted arbitrary readers and cross-workspace composer visibility. |
-| `4484060` relay locking/batches/actions | adapted | Retain validation under workspace locks and independent reader batches; remove the obsolete auto-status action exception. |
-| `bf1581e` auto CAS; newest relay batch | adapted | Keep newest-batch recency and closed-ask metadata; remove auto-status compare-and-set machinery superseded by upstream. |
+| `4484060` relay locking/batches/actions | kept | Retain validation under workspace locks, independent reader batches and action buttons on automatically in-progress asks. |
+| `bf1581e` auto CAS; newest relay batch | kept | Retain automatic compare-and-set flips, newest-batch recency and closed-ask metadata. |
 | `f070082` atomic send claim | kept | Keep check-and-claim under the store lock so concurrent presses cannot queue duplicate sends. |
 | `32fda00` relayed phone preview | adapted | Retain the cross-workspace relay sample using the upstream card and preview host interfaces. |
 | `9061043` orphan admin reassignment/close | kept | Preserve authenticated admin recovery and action-log entries, which upstream does not provide. |
 
-Summary: **29 local-only commits: 17 kept, 3 dropped, 9 adapted**. Historical merge and evidence commits count as kept even when the behavior they document has since changed.
+Summary after independent review: **29 local-only commits: 21 kept, 1 dropped, 7 adapted**. Historical merge and evidence commits count as kept even when the behavior they document has since changed.
 
 ## Resulting behavior
 
-Upstream owns waiting-on-you status, native question and chat cards, shared Markdown, discussion workspaces, Show in chat, snoozed counts, workspace summaries, PR review/deployment handling and classifier nudges. Local additions retain relay batches, newest-relay expansion, cross-workspace context, action delivery feedback/logging, atomic sends, PR cache invalidation and closed-owner administration.
+Upstream provides native question and chat cards, shared Markdown, discussion workspaces, Show in chat, snoozed counts, workspace summaries, PR review/deployment handling and classifier nudges. Local behavior retains automatic run-state status, relay batches, newest-relay expansion, cross-workspace context, delivery feedback/logging, atomic sends, PR cache invalidation and closed-owner administration. Answers wait until the owner is idle, including on steering-capable providers.
 
-The old run-state status feature is intentionally removed, not kept as a compatibility shim. A load-time data migration removes stored `autoStatus` fields and reopens only automatically in-progress asks. Human-sent or explicitly in-progress asks keep their status; timestamps, outcomes and relay stamps are preserved.
+Independent review rejected the initial decision to replace automatic status with upstream's human-wait lifecycle: these mechanisms do not have the same observable behavior. The harness requires automatic flips and available unsent buttons during an automatic in-progress turn. The automatic status implementation, hooks, flag, lock-protected compare-and-set and tests are restored, and the migration stripping the flag is removed before any live deployment.
 
 ## Backup proof
 
@@ -68,7 +68,7 @@ a906c8e5ffd803f0210d93b7d3a782e10fecc74c refs/heads/fix/pin-plugin-paseo-min-ver
 
 All seven original local heads match their backup refs exactly. The catch-up branch is an additional push, not a replacement for these backups.
 
-## Verification
+## Initial merge verification
 
 Dependencies installed with `bun install` in the root and preview. Generated Bun lockfiles were removed to retain the repository's existing package-lock convention.
 
@@ -77,8 +77,29 @@ Dependencies installed with `bun install` in the root and preview. Generated Bun
 - Vite warned that its 900.72 kB JavaScript chunk exceeds 500 kB; this is a warning, not a failed build.
 - Full tests run through the machine-wide queue: `bun run --cwd /Users/wesleyfrederick/Documents/ObsidianVault/0_SoftwareDevelopment/cc-workflows-plugin test-queue exec --cwd /Users/wesleyfrederick/.paseo/plugin-src/paseo-asks-catch-up -- sh -c 'bun run test'`. A direct run was refused by the queue guard; the first queued attempt timed out before starting tests and was resubmitted without a deadline.
 - The first completed suite found an integration mismatch: upstream's message-parser test marked an ask done and then dropped the same closed ask, which the preserved local closed-action guard correctly refuses. Done and dropped are now tested with independent fresh asks; neither parser assertion nor the refusal guard was weakened.
-- Final full suite exited 0: `Test Files  20 passed (20)`, `Tests  246 passed (246)`, `Duration  2.17s`.
+- The initial merge suite exited 0: `Test Files  20 passed (20)`, `Tests  246 passed (246)`, `Duration  2.17s`. Independent review then found missing behavioral coverage; these results alone did not establish preservation of the harness contract.
 - Merge commit: `59d8335`. All 16 conflicted paths are resolved; no refresh-pill branch merge was performed.
+
+## Independent-review corrections
+
+The initial merge passed the existing suite but failed independent behavioral review. The corrections retain the backup's harness contract instead of treating upstream's different lifecycle as equivalent.
+
+| Finding | Correction and regression coverage |
+|---|---|
+| Partial update erased the body | Only patch body when supplied; status-only and title-only updates preserve it (`test/asks.test.ts`). |
+| Stale sweep raced a human action | Compare observed status, owner and update time inside the store lock before reopening; concurrent drops, owner changes and edits must win (`test/stuck.test.ts`). |
+| Archived relay source vanished from the composer | Separate relay-aware composer data from the active-only global queue; assert the archived relay still counts and expands for its reader but not an unrelated reader (`test/workspaces.test.ts`). |
+| Closed asks still accepted replies | Apply the same closed-ask refusal to replies and assert no message or mutation on done/dropped asks (`test/asks.test.ts`). |
+| Existing open-list clients were rejected | Accept `ask_list` status `open` with its existing active-list behavior (`test/asks.test.ts`). |
+| Deferred work was forced into asks | Standing rules, nudge, refresh and classifier prompts route deferred/out-of-scope work to the work queue; asks require a human answer or action (`test/asks.test.ts`, `test/nudge.test.ts`). |
+| Automatic status, buttons and delivery changed | Restore automatic running/idle flips, unsent buttons on automatically in-progress asks, human-send holds and idle-only delivery even on steering-capable providers (`test/run-status.test.ts`, `test/asks.test.ts`, `test/nudge.test.ts`). |
+
+Review-correction verification:
+
+- `bun run typecheck` exited 0: `$ tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.server.json`.
+- `bunx vite build` in `preview` exited 0: `✓ 2065 modules transformed.` and `✓ built in 643ms`. Its 900.94 kB JavaScript chunk still produces the non-fatal 500 kB size warning.
+- The first correction suite exposed six obsolete lifecycle expectations: one expected steering during a running turn, and five assumed newly created asks were already idle/open. The steering test now asserts zero sends until idle, then one delivery; discussion/message fixtures run the real turn-end handler before testing idle behavior. The explainer's new ask is asserted automatically in progress. No refusal, authorization, parser or waiting-count assertion was removed.
+- Final full suite through the same machine-wide queue exited 0: `Test Files  21 passed (21)`, `Tests  289 passed (289)`, `Duration  5.58s`.
 
 ## Activate or roll back
 

@@ -1,11 +1,12 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Outbox, type Courier } from "../server/outbox";
 import { AsksService } from "../server/service";
 import { AskStore } from "../server/store";
 import { STALE_MS } from "../server/stuck";
+import { RunStatus } from "../server/run-status";
 import type { PrState } from "../shared/asks";
 
 const WS = "wks_1";
@@ -42,6 +43,8 @@ describe("asks stuck in progress", () => {
     service = new AsksService(store, outbox, async (agentId) => (agentId === AGENT ? WS : null));
   });
 
+  afterEach(() => vi.useRealTimers());
+
   const prAsk = async () => {
     await service.callTool(AGENT, "ask_create", {
       kind: "pr",
@@ -62,14 +65,17 @@ describe("asks stuck in progress", () => {
     expect(sent[0]).not.toContain("If the PR still waits on the human after it");
   });
 
-  it("reopens on new actions even when the agent passes status in_progress", async () => {
+  it("releases new actions automatically at turn end even when the agent passes status in_progress", async () => {
     await prAsk();
     const result = await service.callTool(AGENT, "ask_update", {
       id: "A1",
       status: "in_progress",
       actions: [{ label: "Authorize: add QA labels + merge", kind: "send", prompt: "Add the labels and merge" }],
     });
-    expect(result.text).toMatch(/^A1 \[open\]/);
+    expect(result.text).toMatch(/^A1 \[in_progress\]/);
+    expect(store.get(WS, "A1")?.autoStatus).toBe(true);
+    await new RunStatus(store, () => {}).turnEnded(AGENT);
+    expect(store.get(WS, "A1")?.status).toBe("open");
   });
 
   it("still lets the agent resolve or drop an ask while giving it actions", async () => {
@@ -114,6 +120,7 @@ describe("asks stuck in progress", () => {
   it("hands an archived owner's in-progress asks back to the human", async () => {
     await prAsk();
     await service.callTool(AGENT, "ask_create", { kind: "followup", title: "Untouched" });
+    await new RunStatus(store, () => {}).turnEnded(AGENT);
     const released = await service.releaseOwner(AGENT);
     expect(released.map((ask) => ask.id)).toEqual(["A1"]);
     expect(store.get(WS, "A1")?.status).toBe("open");
@@ -128,5 +135,41 @@ describe("asks stuck in progress", () => {
     const reopened = await service.reopenStale(async () => false, later);
     expect(reopened.map((ask) => ask.id)).toEqual(["A1"]);
     expect(store.get(WS, "A1")?.status).toBe("open");
+  });
+
+  it.each(["dropped", "done", "owner", "updated"] as const)("Given a stale ask, When it is %s during owner lookup, Then reopening preserves the newer state", async (change) => {
+    // Given
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date("2026-11-01T00:00:00.000Z") });
+    await prAsk();
+    const observed = store.get(WS, "A1")!;
+    const later = new Date(Date.parse(observed.updatedAt) + STALE_MS);
+    let changed = observed;
+    // When
+    const reopened = await service.reopenStale(async () => {
+      vi.setSystemTime(later);
+      changed = await store.update(WS, "A1",
+        change === "owner" ? { ownerAgentId: "new-owner" } :
+        change === "updated" ? { body: "Work resumed" } : { status: change },
+        { touch: change !== "owner" });
+      return false;
+    }, later);
+    // Then
+    expect(reopened).toEqual([]);
+    expect(store.get(WS, "A1")).toEqual(changed);
+    expect(store.get(WS, "A1")?.status).toBe(change === "done" || change === "dropped" ? change : "in_progress");
+  });
+
+  it("Given stale asks share an owner, When lookup fails, Then neither reopens and the failure is cached for the scan", async () => {
+    // Given
+    await prAsk();
+    await service.callTool(AGENT, "ask_create", { kind: "question", title: "Which region?" });
+    const later = new Date(Date.now() + STALE_MS);
+    const lookup = vi.fn(async () => { throw new Error("Unavailable"); });
+    // When
+    const reopened = await service.reopenStale(lookup, later);
+    // Then
+    expect(reopened).toEqual([]);
+    expect(lookup).toHaveBeenCalledTimes(1);
+    expect(store.list(WS).every((ask) => ask.status === "in_progress")).toBe(true);
   });
 });

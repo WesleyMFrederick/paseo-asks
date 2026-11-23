@@ -32,9 +32,8 @@ export type UndeliverableReason = "gone" | "failed";
 const KEEP_DELIVERED = 200;
 
 /**
- * Messages to agents, written to disk before any send. A message goes out batched, steered into a
- * running turn when the provider allows it. Otherwise it waits for the turn to end, since a send
- * mid-turn would interrupt it.
+ * Messages to agents, written to disk before any send. Messages go out batched only while the
+ * agent is idle, even when its provider supports steering into a running turn.
  */
 export class Outbox {
   private readonly path: string;
@@ -88,8 +87,8 @@ export class Outbox {
       byAgent.set(entry.agentId, [...(byAgent.get(entry.agentId) ?? []), entry]);
     }
     for (const [target, batch] of byAgent) {
-      const state = await this.courier.state(target).catch(() => "idle" as const);
-      if (state === "running") continue;
+      const state = await this.courier.state(target).catch(() => "running" as const);
+      if (isWorking(state)) continue;
       if (state === "gone") {
         for (const entry of batch) Object.assign(entry, { state: "failed", error: "agent is gone" });
         this.save();
