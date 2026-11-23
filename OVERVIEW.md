@@ -2,15 +2,18 @@ Asks lifts what your agents need from you out of their chats and into one list. 
 
 ## How it works
 
-Every agent created after the plugin is installed gets an `asks` MCP server with four tools: `ask_create`, `ask_update`, `ask_resolve` and `ask_list`. The server's instructions tell the agent when to use them. If an agent ends a turn on a question without recording an ask, it gets one reminder. Pressing a button sends the agent a message that starts with `[asks]`. If the agent is in the middle of a turn, the message waits until the turn ends, so it never interrupts. Messages are written to disk before they are sent, so a plugin restart does not lose them.
+Every agent created after the plugin is installed gets an `asks` MCP server with four tools: `ask_create`, `ask_update`, `ask_resolve` and `ask_list`. The server's instructions tell the agent when to use them. If an agent ends a turn waiting on the human without recording an ask, it gets one reminder. Pressing a button sends the agent a message that starts with `[asks]`. If the agent is in the middle of a turn, the message joins that turn when its provider allows it, and otherwise waits until the turn ends, so it never interrupts. Messages are written to disk before they are sent, so a plugin restart does not lose them.
+
+A scheduled run whose agent leaves asks waiting on you is marked **Needs you** on Paseo's Schedules screen, and you get a notification. Paseo keeps that run's workspace instead of archiving it, so the asks and their buttons stay live. Needs a Paseo host with fullstackhouse/paseo#106.
 
 ## Where you see asks
 
 - **Asks** panel in each workspace.
-- **Asks** screen in the sidebar, with every workspace's asks and a count of what is waiting.
-- **Asks** pill in every agent's composer, showing its open count or "No asks". Pressing it lists that agent's asks and offers **Refresh asks**, which tells the agent to bring them up to date. It also lists asks from other agents and workspaces that the agent's replies pointed at (relayed at the end of each turn); the newest of those open expanded and name their workspace.
+- **Asks** screen in the sidebar, with every workspace's asks and a count of what is waiting. Snoozed workspaces stay out of the count.
+- Inline in the agent's chat: each ask appears where the agent created, updated or resolved it. The latest of those is kept up to date, with open asks expanded and their buttons ready; earlier ones show the ask as it was then. Agents create the ask at the end of their reply, so the buttons sit right below the explanation, with the ask's full text under them.
+- **Asks** pill in an agent's composer, showing its own and relayed waiting or in-progress asks, hidden when there are none. Pressing it offers **Refresh asks** and, on wide layouts, **Open wide**. Relayed asks can belong to other workspaces; the newest relay starts expanded, its rows name their workspace, and answers still reach the owner.
 
-From an ask you can pick one of its actions, reply with a note, mark it done or drop it, or open a side chat to talk it through. The side chat starts read-only and already has the ask in context. When you settle it there, the main agent gets the outcome as one message. PR asks show live status from `gh` when `gh` is installed. An agent can subscribe to be told when its PR merges, closes, or its checks change.
+From an ask you can pick one of its actions, reply with a note, mark it done or drop it, or open a side chat to talk it through. The side chat starts read-only and already has the ask in context. When you settle it there, the main agent gets the outcome as one message. PR asks show live status from `gh` when `gh` is installed, including preview deployment links. An agent can subscribe to be told when its PR merges, closes, its checks change or its review decision changes. A setting holds requested changes back as an ask with an Address button, so the agent starts on a review only when you say so.
 
 ## Limits
 

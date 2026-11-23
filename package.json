@@ -1,7 +1,7 @@
 {
   "name": "paseo-asks",
-  "private": true,
   "version": "0.0.0",
+  "private": true,
   "files": [
     "paseo-plugin.json",
     "OVERVIEW.md",
@@ -13,10 +13,12 @@
   ],
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.server.json",
-    "test": "vitest run"
+    "test": "vitest run",
+    "e2e": "npm --prefix e2e test",
+    "e2e:record": "npm --prefix e2e run record"
   },
   "devDependencies": {
-    "@getpaseo/plugin": "0.12.0",
+    "@getpaseo/plugin": "0.15.3",
     "@tanstack/react-query": "^5.90.11",
     "@types/node": "^24.19.2",
     "@types/react": "~19.2.0",

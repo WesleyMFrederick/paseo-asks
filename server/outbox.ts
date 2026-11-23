@@ -14,7 +14,11 @@ export interface Delivery {
   error?: string;
 }
 
-export type AgentState = "idle" | "running" | "gone";
+/** `steerable`: mid-turn, on a provider that takes a steer into the running turn instead of interrupting it. */
+export type AgentState = "idle" | "steerable" | "running" | "gone";
+
+/** Mid-turn, whether or not a message can join the turn. */
+export const isWorking = (state: AgentState): boolean => state === "running" || state === "steerable";
 
 export interface Courier {
   state(agentId: string): Promise<AgentState>;
@@ -22,11 +26,15 @@ export interface Courier {
 }
 
 const MAX_ATTEMPTS = 5;
+
+/** Why messages were given up on: the agent is gone, or every attempt to reach it failed. */
+export type UndeliverableReason = "gone" | "failed";
 const KEEP_DELIVERED = 200;
 
 /**
- * Messages to agents, written to disk before any send. A message waits while its agent runs a
- * turn (a send mid-turn would interrupt it) and goes out batched once the agent is idle.
+ * Messages to agents, written to disk before any send. A message goes out batched, steered into a
+ * running turn when the provider allows it. Otherwise it waits for the turn to end, since a send
+ * mid-turn would interrupt it.
  */
 export class Outbox {
   private readonly path: string;
@@ -37,7 +45,7 @@ export class Outbox {
   constructor(
     root: string,
     private readonly courier: Courier,
-    private readonly onGone: (deliveries: Delivery[]) => Promise<void> = async () => {},
+    private readonly onUndeliverable: (deliveries: Delivery[], reason: UndeliverableReason) => Promise<void> = async () => {},
     private readonly now: () => Date = () => new Date(),
   ) {
     this.path = join(root, "outbox.json");
@@ -85,7 +93,7 @@ export class Outbox {
       if (state === "gone") {
         for (const entry of batch) Object.assign(entry, { state: "failed", error: "agent is gone" });
         this.save();
-        await this.onGone(batch);
+        await this.onUndeliverable(batch, "gone");
         continue;
       }
       try {
@@ -97,6 +105,10 @@ export class Outbox {
           entry.error = error instanceof Error ? error.message : String(error);
           if (entry.attempts >= MAX_ATTEMPTS) entry.state = "failed";
         }
+        this.save();
+        const failed = batch.filter((entry) => entry.state === "failed");
+        if (failed.length) await this.onUndeliverable(failed, "failed");
+        continue;
       }
       this.save();
     }

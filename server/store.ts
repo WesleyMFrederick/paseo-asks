@@ -8,13 +8,12 @@ interface WorkspaceFile {
   asks: Ask[];
 }
 
-export type NewAsk = Pick<Ask, "workspaceId" | "ownerAgentId" | "kind" | "title" | "body" | "links" | "subscribe"> &
-  Partial<Pick<Ask, "status" | "autoStatus">> & {
+export type NewAsk = Pick<Ask, "workspaceId" | "ownerAgentId" | "kind" | "title" | "body" | "links" | "subscribe" | "heldReview" | "lastCall"> & {
   actions: Omit<Action, "id">[];
 };
 
 export type AskPatch = Partial<
-  Pick<Ask, "title" | "body" | "links" | "status" | "autoStatus" | "outcome" | "orphaned" | "ownerAgentId" | "subscribe" | "pr" | "discussionAgentId" | "relayedTo">
+  Pick<Ask, "title" | "body" | "links" | "status" | "outcome" | "orphaned" | "ownerAgentId" | "subscribe" | "pr" | "discussionAgentId" | "discussionWorkspaceId" | "remindedAt" | "lastCall" | "relayedTo">
 > & {
   actions?: Omit<Action, "id">[];
 };
@@ -24,6 +23,8 @@ export class AskStore {
   private readonly dir: string;
   private readonly cache = new Map<string, WorkspaceFile>();
   private readonly locks = new Map<string, Promise<unknown>>();
+  /** Every workspace with a file. Read from disk once: this process is the only writer, and lists run on every poll. */
+  private known: Set<string> | null = null;
 
   constructor(root: string, private readonly now: () => Date = () => new Date()) {
     this.dir = join(root, "workspaces");
@@ -46,7 +47,7 @@ export class AskStore {
         ...input,
         id: `A${file.nextId++}`,
         actions: withIds(input.actions),
-        status: input.status ?? "open",
+        status: "open",
         createdAt: at,
         updatedAt: at,
       };
@@ -55,7 +56,15 @@ export class AskStore {
     });
   }
 
-  /** `touch: false` for bookkeeping (a PR snapshot, a relay) that should not count as the ask changing. */
+  /** Numbers the workspace's next asks after `id` (e.g. A31 after A30), so they can't be mistaken for that ask. */
+  reserveAfter(workspaceId: string, id: string): Promise<void> {
+    const number = Number(id.replace(/^A/, ""));
+    return this.mutate(workspaceId, (file) => {
+      if (Number.isInteger(number)) file.nextId = Math.max(file.nextId, number + 1);
+    });
+  }
+
+  /** `touch: false` for bookkeeping (a PR snapshot) that should not count as the ask changing. */
   update(workspaceId: string, id: string, patch: AskPatch, { touch = true } = {}): Promise<Ask> {
     return this.mutate(workspaceId, (file) => {
       const index = file.asks.findIndex((ask) => ask.id === id);
@@ -74,26 +83,15 @@ export class AskStore {
     });
   }
 
-  /** Compare and flip inside the workspace lock; stale owner-state reads must not undo human actions. */
-  flipStatus(expected: Ask, status: Ask["status"], autoStatus: boolean): Promise<boolean> {
-    return this.mutate(expected.workspaceId, (file) => {
-      const current = file.asks.find((ask) => ask.id === expected.id);
-      if (!current || current.status !== expected.status || current.autoStatus !== expected.autoStatus || current.ownerAgentId !== expected.ownerAgentId) return false;
-      current.status = status;
-      current.autoStatus = autoStatus;
-      return true;
-    });
-  }
-
   /** Check the ask is still sendable and mark it sent inside the workspace lock; of two concurrent sends, one is refused. */
-  claimSend(workspaceId: string, id: string): Promise<Ask> {
+  claimSend(workspaceId: string, id: string, outcome?: Ask["outcome"]): Promise<Ask> {
     return this.mutate(workspaceId, (file) => {
       const current = file.asks.find((ask) => ask.id === id);
       if (!current) throw new Error(`No ask ${id} in this workspace`);
       if (!OPEN_STATUSES.includes(current.status)) throw new Error(`${id} is already ${current.status}; nothing was changed or sent`);
-      if (current.status === "in_progress" && !current.autoStatus) throw new Error(`${id} send action was already sent; nothing was changed or sent`);
+      if (current.status === "in_progress") throw new Error(`${id} send action was already sent; nothing was changed or sent`);
       current.status = "in_progress";
-      current.autoStatus = false;
+      current.outcome = outcome;
       current.updatedAt = this.now().toISOString();
       return current;
     });
@@ -135,7 +133,7 @@ export class AskStore {
       if (!OPEN_STATUSES.includes(current.status)) throw new Error(`${from.id} is already ${current.status}; nothing was changed`);
       const at = this.now().toISOString();
       if (from.workspaceId === to.workspaceId) {
-        const next: Ask = { ...current, ownerAgentId: to.ownerAgentId, status: "open", orphaned: undefined, autoStatus: undefined, updatedAt: at };
+        const next: Ask = { ...current, ownerAgentId: to.ownerAgentId, status: "open", orphaned: undefined, updatedAt: at };
         source.asks[index] = next;
         return { moved: next, from: next };
       }
@@ -150,6 +148,7 @@ export class AskStore {
         actions: current.actions,
         links: current.links,
         subscribe: current.subscribe,
+        heldReview: current.heldReview,
         pr: current.pr,
         status: "open",
         createdAt: at,
@@ -163,9 +162,12 @@ export class AskStore {
   }
 
   private workspaceIds(): string[] {
-    return readdirSync(this.dir)
-      .filter((name) => name.endsWith(".json"))
-      .map((name) => decodeURIComponent(name.slice(0, -".json".length)));
+    this.known ??= new Set(
+      readdirSync(this.dir)
+        .filter((name) => name.endsWith(".json"))
+        .map((name) => decodeURIComponent(name.slice(0, -".json".length))),
+    );
+    return [...this.known];
   }
 
   private path(workspaceId: string): string {
@@ -177,6 +179,16 @@ export class AskStore {
     if (cached) return cached;
     const path = this.path(workspaceId);
     const file: WorkspaceFile = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : { nextId: 1, asks: [] };
+    // Old run-state flips were not human answers: restore those buttons once, then discard the legacy marker.
+    const legacy = file.asks as (Ask & { autoStatus?: boolean })[];
+    if (legacy.some((ask) => Object.hasOwn(ask, "autoStatus"))) {
+      file.asks = legacy.map(({ autoStatus, ...ask }) => ({
+        ...ask,
+        status: ask.status === "in_progress" && autoStatus === true ? "open" : ask.status,
+      }));
+      writeFileSync(`${path}.tmp`, JSON.stringify(file, null, 2));
+      renameSync(`${path}.tmp`, path);
+    }
     this.cache.set(workspaceId, file);
     return file;
   }
@@ -194,6 +206,7 @@ export class AskStore {
         writeFileSync(`${path}.tmp`, JSON.stringify(draft, null, 2));
         renameSync(`${path}.tmp`, path);
         this.cache.set(id, draft);
+        this.known?.add(id);
       }
       return result;
     };

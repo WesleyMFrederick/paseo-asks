@@ -1,26 +1,39 @@
 import { appendFileSync } from "node:fs";
 import { join } from "node:path";
 import type { PaseoApi } from "@getpaseo/client";
-import type { PluginServerContext } from "@getpaseo/plugin/server";
-import { actOnAsk, CloseInputSchema, discussAsk, latestRelays, listAsks, OPEN_STATUSES, ReassignInputSchema, refreshAsks, RelayInputSchema } from "./shared/asks";
-import { AgentDirectory } from "./server/agents";
+import { latestTurn, type PluginServerContext } from "@getpaseo/plugin/server";
+import { actOnAsk, CloseInputSchema, discussAsk, latestRelays, listAsks, locateAsk, OPEN_STATUSES, oldestFirst, ReassignInputSchema, refreshAsks, RelayInputSchema, showsIn } from "./shared/asks";
+import { AgentDirectory, pickCaller } from "./server/agents";
 import { installBridge } from "./server/bridge";
-import { discuss } from "./server/discuss";
+import { Discussions } from "./server/discuss";
+import { Gh, ghExec } from "./server/gh";
 import { findGh, ghFetcher } from "./server/github";
 import { LastOutputs } from "./server/last-output";
 import { listen } from "./server/listener";
-import { NUDGE, shouldNudge } from "./server/nudge";
-import { Outbox, type Courier } from "./server/outbox";
+import { findAskCall } from "./server/locate";
+import { CLASSIFIER_PROMPT, NUDGE, paseoClassifier, shouldNudge } from "./server/nudge";
+import { isWorking, Outbox, type Courier } from "./server/outbox";
+import { checkFilePaths, diskPathEnv } from "./server/file-paths";
 import { dataDir } from "./server/paths";
-import { RunStatus, type FlipLogEntry } from "./server/run-status";
+import { isAsksPermission } from "./server/permissions";
+import { AsksService, instructions, TOOLS, type OwnerState } from "./server/service";
 import { AskStore } from "./server/store";
-import { AsksService, INSTRUCTIONS, TOOLS, type OwnerState } from "./server/service";
+import { attentionForOpenAsks } from "./server/schedule-attention";
 import { PrWatcher } from "./server/watcher";
+import { activeWorkspaces, isBackground } from "./server/workspaces";
+import { displaySettings, reviewSettings } from "./shared/settings";
 
 const FLUSH_EVERY_MS = 20_000;
 const PR_EVERY_MS = 120_000;
+const STALE_EVERY_MS = 60 * 60 * 1000;
 
 export default function contribute(server: PluginServerContext) {
+  server.registerSettings(displaySettings);
+  const reviews = server.registerSettings(reviewSettings);
+  const actOnReviewChanges = async () => {
+    const state = await reviews.read();
+    return state.status !== "ready" || state.values.actOnReviewChanges;
+  };
   const dir = dataDir();
   const mcp = installBridge(dir);
   // The daemon session behind `paseo` lives as long as this subprocess; any hook or handler hands it over.
@@ -38,30 +51,47 @@ export default function contribute(server: PluginServerContext) {
     await handle.refresh();
     return handle.workspaceId;
   });
+  const callerIn = async (cwd: string) => {
+    // The caller is mid-turn during its own tool call; background workspaces are left out unless asked for.
+    const { entries } = await requirePaseo().agents.list({
+      includeBackground: true,
+      filter: { statuses: ["running"], includeBackground: true },
+      page: { limit: 200 },
+    });
+    return pickCaller(
+      entries.map((entry) => entry.agent),
+      cwd,
+    );
+  };
   const store = new AskStore(dir);
   const courier: Courier = {
     async state(agentId) {
       const handle = requirePaseo().agents.ref(agentId);
       const found = await handle.refresh();
       if (!found || handle.archivedAt) return "gone";
-      return handle.status === "running" || handle.status === "initializing" ? "running" : "idle";
+      if (handle.status !== "running" && handle.status !== "initializing") return "idle";
+      // COMPAT(supportsSteering): hosts before fullstackhouse/paseo#115 omit it; those wait for the turn to end.
+      return handle.capabilities?.supportsSteering ? "steerable" : "running";
     },
     async send(agentId, text, messageId) {
-      await requirePaseo().agents.ref(agentId).send(text, { messageId, activeTurnBehavior: "steer" });
+      await requirePaseo()
+        .agents.ref(agentId)
+        .send(text, { messageId, activeTurnBehavior: "steer" });
     },
   };
-  const outbox = new Outbox(dir, courier, async (deliveries) => {
+  const outbox = new Outbox(dir, courier, async (deliveries, reason) => {
     for (const { workspaceId, askId } of deliveries) {
       const ask = askId ? store.get(workspaceId, askId) : undefined;
-      if (ask && OPEN_STATUSES.includes(ask.status)) await store.update(workspaceId, ask.id, { orphaned: true });
+      if (!ask || !OPEN_STATUSES.includes(ask.status)) continue;
+      // Gone: nobody will hear a click, but the human still has to see what it was waiting on.
+      // Failed (e.g. the agent's worktree was deleted): the click never arrived, so nobody is working
+      // on it. Hand it back with its buttons; a later click retries, and once the host archives the
+      // agent the gone path orphans the ask.
+      await store.update(workspaceId, ask.id, reason === "gone" ? { orphaned: true, status: "open" } : { status: "open" });
     }
   });
   // Every human action on an ask, and every admin reassign/close, applied or refused, one JSON line each.
   const actLog = join(dir, "act-log.jsonl");
-  // Every automatic open/in_progress flip, one JSON line each.
-  const flipLog = join(dir, "status-flip-log.jsonl");
-  const logFlip = (entry: FlipLogEntry) => appendFileSync(flipLog, `${JSON.stringify(entry)}\n`);
-  const runStatus = new RunStatus(store, logFlip);
   // Admin moves and closes: "closed" (session ended) is told apart from "gone" (unknown or archived).
   const ownerState = async (agentId: string): Promise<OwnerState> => {
     const handle = requirePaseo().agents.ref(agentId);
@@ -70,64 +100,141 @@ export default function contribute(server: PluginServerContext) {
     if (handle.status === "closed") return "closed";
     return handle.status === "running" || handle.status === "initializing" ? "running" : "idle";
   };
-  const service = new AsksService(store, outbox, (agentId) => agents.workspaceOf(agentId), (entry) =>
-    appendFileSync(actLog, `${JSON.stringify(entry)}\n`),
-  logFlip, ownerState);
+  const service = new AsksService(
+    store,
+    outbox,
+    (agentId) => agents.workspaceOf(agentId),
+    // Until a hook or RPC hands over a daemon session (e.g. right after a reload), every workspace counts as visible.
+    // Intended: going through requirePaseo would fail every asks call in that window, visible agents' too.
+    (workspaceId) => (paseo ? isBackground(paseo, workspaceId) : Promise.resolve(false)),
+    async (workspaceId, body) => {
+      const workspace = paseo ? await paseo.workspaces.ref(workspaceId).refresh() : null;
+      return workspace?.workspaceDirectory ? checkFilePaths(body, workspace.workspaceDirectory, diskPathEnv) : { body, notes: [] };
+    },
+    (entry) => appendFileSync(actLog, `${JSON.stringify(entry)}\n`),
+    ownerState,
+  );
   const lastOutputs = new LastOutputs(dir);
-  const gh = findGh();
-  if (!gh) console.error("[asks] gh not found; PR asks will show no live status");
-  const watcher = gh ? new PrWatcher(store, service, ghFetcher(gh)) : null;
+  const ghPath = findGh();
+  if (!ghPath) console.error("[asks] gh not found; PR asks will show no live status");
+  // Until a hook or RPC hands over a daemon session (e.g. right after a reload), every workspace is polled.
+  const liveWorkspaces = async () => (paseo ? new Set((await activeWorkspaces(paseo)).keys()) : null);
+  const watcher = ghPath
+    ? new PrWatcher(store, service, ghFetcher(new Gh(ghExec(ghPath))), actOnReviewChanges, liveWorkspaces)
+    : null;
+  // Short-lived classifier agents the plugin starts itself; its hooks leave them alone.
+  const helpers = new Set<string>();
+  const classifierFor = paseoClassifier(requirePaseo, helpers);
 
   server.before("agent.create", ({ request }, { paseo: api }) => {
     capture(api);
-    return { ...request, config: { ...request.config, mcpServers: { ...request.config.mcpServers, asks: mcp } } };
+    if (request.config.systemPrompt === CLASSIFIER_PROMPT) return request;
+    return {
+      ...request,
+      config: { ...request.config, mcpServers: { ...request.config.mcpServers, asks: mcp } },
+    };
   });
   server.before("agent.session_open", ({ request }, { paseo: api }) => {
     capture(api);
-    if (request.workspaceId) agents.remember(request.agentId, request.workspaceId);
+    if (request.workspaceId && !helpers.has(request.agentId))
+      agents.remember(request.agentId, request.workspaceId);
   });
   server.on("agent.created", ({ agent }, { paseo: api }) => {
     capture(api);
-    if (agent.workspaceId) agents.remember(agent.id, agent.workspaceId);
+    if (agent.workspaceId && !helpers.has(agent.id)) agents.remember(agent.id, agent.workspaceId);
   });
-  server.on("agent.turn_started", async ({ agent }, { paseo: api }) => {
+  server.on("agent.turn_ended", async ({ agent, outcome }, { paseo: api }) => {
     capture(api);
-    await runStatus.turnStarted(agent.id).catch((error) => console.error("[asks] turn_started status flip failed", error));
-  });
-  server.on("agent.turn_ended", async ({ agent, outcome, timeline }, { paseo: api }) => {
-    capture(api);
-    lastOutputs.record(agent.id, timeline);
-    await runStatus.turnEnded(agent.id).catch((error) => console.error("[asks] turn_ended status flip failed", error));
-    // Agents sometimes ask in chat and skip ask_create; one reminder per such turn. Side chats talk to the human directly.
-    const asks = store.list(agent.workspaceId ?? undefined);
-    const sideChat = asks.some((ask) => ask.discussionAgentId === agent.id);
-    if (outcome.kind === "completed" && agent.workspaceId && !sideChat && shouldNudge(timeline, asks.filter((ask) => OPEN_STATUSES.includes(ask.status)))) {
-      service.message(agent.id, agent.workspaceId, NUDGE);
-    }
+    if (helpers.has(agent.id)) return;
     void outbox.flush(agent.id);
+    const timeline = await latestTurn(api.agents.ref(agent.id).timeline);
+    lastOutputs.record(agent.id, timeline);
+    // Agents sometimes ask in chat and skip ask_create; one reminder per such turn. A read-only side chat (a
+    // discussion in the ask's own workspace) talks to the human directly and could not carry out an ask of its own.
+    const sideChat = service.discussing(agent.id).some((ask) => !ask.discussionWorkspaceId);
+    if (outcome.kind !== "completed" || !agent.workspaceId || sideChat) return;
+    const workspaceId = agent.workspaceId;
+    if (await isBackground(api, workspaceId)) return;
+    void service
+      .remindStuck(agent.id, workspaceId)
+      .then(() => outbox.flush(agent.id))
+      .catch(() => {});
+    const openAsks = [...store.list(workspaceId), ...service.discussing(agent.id)]
+      .filter((ask) => OPEN_STATUSES.includes(ask.status));
+    const openIds = new Set(openAsks.map((ask) => ask.id));
+    void shouldNudge(timeline, (id) => openIds.has(id), classifierFor(agent.id), openAsks)
+      .then(async (nudge) => {
+        // The classifier takes a few seconds. If the human has moved on, steer the reminder into the new
+        // turn; only an agent that can't take a steer is left alone.
+        if (!nudge) return;
+        const state = await courier.state(agent.id);
+        if (state === "running" || state === "gone") return;
+        service.message(agent.id, workspaceId, NUDGE);
+        await outbox.flush(agent.id);
+      })
+      .catch(() => {});
   });
-  // Plan mode (the side chat's read-only mode) prompts even for preapproved MCP tools. The asks
+  // Plan mode (the side chat's read-only mode) and Codex prompt even for preapproved MCP tools. The asks
   // tools only touch asks, so answer those prompts here instead of interrupting the human.
   server.on("agent.permission_requested", async ({ agent, request }, { paseo: api }) => {
     capture(api);
-    if (request.kind !== "tool" || !request.name.startsWith("mcp__asks__")) return;
-    await api.agents.ref(agent.id).respondToPermission({ requestId: request.id, response: { behavior: "allow" } });
+    // A classifier only needs to answer; never let it put a prompt in front of the human.
+    if (helpers.has(agent.id)) {
+      await api.agents.ref(agent.id).respondToPermission({
+        requestId: request.id,
+        response: { behavior: "deny", message: "Answer without tools." },
+      });
+      return;
+    }
+    if (!isAsksPermission(request)) return;
+    await api.agents
+      .ref(agent.id)
+      .respondToPermission({ requestId: request.id, response: { behavior: "allow" } });
   });
+  // A scheduled run that leaves asks waiting on you is marked Needs you, so Paseo keeps its workspace
+  // (and these asks) instead of archiving it.
+  try {
+    server.addHook("schedule.run.finish.before", async ({ request }, { paseo: api }) => {
+      capture(api);
+      const attention = attentionForOpenAsks(store.list(request.agent.workspaceId ?? undefined), request.agent.id);
+      if (!attention || request.attention) return;
+      const name = request.schedule.name ?? "Scheduled run";
+      void api.notifications
+        .send({
+          title: `${name} needs you`,
+          body: attention.message ?? "",
+          open: { agentId: request.agent.id },
+          key: `schedule-run:${request.runId}`,
+        })
+        .catch(() => {});
+      return { ...request, attention };
+    });
+  } catch {
+    // COMPAT(scheduleRunAttention): hosts before fullstackhouse/paseo#106 don't know the hook.
+  }
   server.on("agent.archived", ({ agent }, { paseo: api }) => {
     capture(api);
     void outbox.flush(agent.id);
+    void service.releaseOwner(agent.id);
+    void service.endDiscussion(agent.id);
   });
 
   server.handle(listAsks, async ({ workspaceId, includeClosed }, { paseo: api }) => {
     capture(api);
-    const all = store.list(workspaceId);
+    // A workspace also lists the ask it explains, with its buttons, so the human answers it there.
+    const all = workspaceId ? store.list().filter((ask) => showsIn(ask, workspaceId)) : store.list();
     const latest = latestRelays(all);
     const asks = all.filter((ask) => includeClosed || OPEN_STATUSES.includes(ask.status));
-    asks.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    asks.sort(oldestFirst);
     if (workspaceId) return { asks, latestRelays: latest };
     // The global screen has no workspace context, so client state hooks can't resolve names there.
-    const { entries } = await api.workspaces.list({ page: { limit: 200 } }).catch(() => ({ entries: [] }));
-    return { asks, latestRelays: latest, workspaceNames: Object.fromEntries(entries.map((w) => [w.id, w.name])) };
+    // Background and archived asks remain available by workspace, but stay out of the global queue.
+    const live = await activeWorkspaces(api);
+    return {
+      asks: asks.filter((ask) => live.has(ask.workspaceId)),
+      latestRelays: latest,
+      workspaceNames: Object.fromEntries(live),
+    };
   });
   server.handle(actOnAsk, (input, { paseo: api }) => {
     capture(api);
@@ -137,30 +244,50 @@ export default function contribute(server: PluginServerContext) {
     capture(api);
     return service.refresh(agentId);
   });
-  const startDiscussion = (api: PaseoApi, workspaceId: string, id: string) => {
+  const discussions = new Discussions();
+  const startDiscussion = (api: PaseoApi, workspaceId: string, id: string, note?: string) => {
     const ask = store.get(workspaceId, id);
     if (!ask) throw new Error(`No ask ${id} in this workspace`);
-    return discuss({ paseo: api, store, mcp, lastOutput: (agentId) => lastOutputs.get(agentId) }, ask);
+    return discussions.start(
+      { paseo: api, store, mcp, lastOutput: (agentId) => lastOutputs.get(agentId), log: console.log },
+      ask,
+      note,
+    );
   };
-  server.handle(discussAsk, ({ workspaceId, id }, { paseo: api }) => {
+  server.handle(discussAsk, ({ workspaceId, id, note }, { paseo: api }) => {
     capture(api);
-    return startDiscussion(api, workspaceId, id);
+    return startDiscussion(api, workspaceId, id, note);
+  });
+  server.handle(locateAsk, async ({ workspaceId, id }, { paseo: api }) => {
+    capture(api);
+    const ask = store.get(workspaceId, id);
+    if (!ask) throw new Error(`No ask ${id} in this workspace`);
+    const position = await findAskCall(api.agents.ref(ask.ownerAgentId).timeline, ask.id).catch(() => null);
+    return position ? { agentId: ask.ownerAgentId, position } : { agentId: ask.ownerAgentId };
   });
 
   const listening = listen(dir, {
-    "/instructions": async () => ({ instructions: INSTRUCTIONS }),
+    // Read when an agent's MCP session starts, so a changed setting reaches agents started or resumed after it.
+    "/instructions": async () => ({
+      instructions: instructions({ actOnReviewChanges: await actOnReviewChanges() }),
+    }),
     "/tools": async () => ({ tools: TOOLS }),
-    "/call": async ({ agentId, name, arguments: args }) => {
-      const result = await service.callTool(agentId ?? null, name, args);
-      if (!result.isError && (name === "ask_create" || name === "ask_update")) void watcher?.refresh();
-      return result;
+    "/call": async ({ agentId, cwd, name, arguments: args }) => {
+      const result = await service.callTool(
+        agentId ?? (cwd ? await callerIn(cwd) : null),
+        name,
+        args,
+      );
+      // Shows a newly linked PR's state now rather than at the next poll.
+      if (result.ask && (name === "ask_create" || name === "ask_update")) void watcher?.refresh(result.ask);
+      return { text: result.text, isError: result.isError };
     },
     // The same disposal the UI does, for scripts and terminal use.
     "/act": async (input) => service.act(actOnAsk.input.parse(input)),
     "/refresh": async (input) => service.refresh(refreshAsks.input.parse(input).agentId),
     "/discuss": async (input) => {
-      const { workspaceId, id } = discussAsk.input.parse(input);
-      return startDiscussion(requirePaseo(), workspaceId, id);
+      const { workspaceId, id, note } = discussAsk.input.parse(input);
+      return startDiscussion(requirePaseo(), workspaceId, id, note);
     },
     // The harness, at turn end: the asks a reply's pointer lines named, so the reader's pill lists them.
     "/relay": async (input) => service.relay(RelayInputSchema.parse(input)),
@@ -171,15 +298,23 @@ export default function contribute(server: PluginServerContext) {
   });
   const timer = setInterval(() => {
     if (paseo && outbox.pending().length) void outbox.flush();
-    if (paseo) runStatus.reconcile(courier.state).catch((error) => console.error("[asks] status reconcile failed", error));
   }, FLUSH_EVERY_MS);
 
   const prTimer = setInterval(() => void watcher?.refresh(), PR_EVERY_MS);
+  // Also the backlog sweep: the first run after start reopens asks that went stale before this existed.
+  const reopenStale = () => {
+    if (!paseo) return;
+    void service.reopenStale(async (agentId) => isWorking(await courier.state(agentId)));
+  };
+  const staleTimer = setInterval(reopenStale, STALE_EVERY_MS);
+  const firstStale = setTimeout(reopenStale, PR_EVERY_MS);
   void watcher?.refresh();
 
   return async () => {
     clearInterval(timer);
     clearInterval(prTimer);
+    clearInterval(staleTimer);
+    clearTimeout(firstStale);
     (await listening).close();
   };
 }

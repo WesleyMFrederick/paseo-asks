@@ -36,6 +36,26 @@ export const asks: Ask[] = [
   },
   {
     ...base,
+    id: "A9",
+    workspaceId: "api",
+    ownerAgentId: "main",
+    kind: "review",
+    status: "open",
+    title: "Post the review for the already merged checkout migration",
+    pr: {
+      number: 21,
+      url: "https://github.com/acme/shop-api/pull/21",
+      state: "MERGED",
+      isDraft: false,
+      reviewDecision: "APPROVED",
+      checks: "passing",
+      mergeable: "UNKNOWN",
+      fetchedAt: ago(1),
+    },
+    updatedAt: ago(600),
+  },
+  {
+    ...base,
     id: "A3",
     workspaceId: "api",
     ownerAgentId: "main",
@@ -62,6 +82,8 @@ export const asks: Ask[] = [
       { id: "a2", label: "Redis", kind: "resolve" },
       { id: "a3", label: "Keep the cookie", kind: "resolve" },
     ],
+    discussionAgentId: "explainer",
+    discussionWorkspaceId: "explain-a3",
     updatedAt: ago(120),
   },
   {
@@ -73,7 +95,15 @@ export const asks: Ask[] = [
     status: "open",
     title: "PR #29 Stripe webhook retries is ready",
     links: [{ label: "PR #29", url: "https://github.com/acme/shop-api/pull/29" }],
-    actions: [{ id: "a1", label: "Merge (squash)", kind: "send", prompt: "Merge PR #29 with squash", recommended: true }],
+    actions: [
+      {
+        id: "a1",
+        label: "Merge (squash)",
+        kind: "send",
+        prompt: "Merge PR #29 with squash",
+        recommended: true,
+      },
+    ],
     pr: {
       number: 29,
       url: "https://github.com/acme/shop-api/pull/29",
@@ -82,6 +112,10 @@ export const asks: Ask[] = [
       reviewDecision: "APPROVED",
       checks: "passing",
       mergeable: "MERGEABLE",
+      deployments: [
+        { label: "pr-29.shop-api.example.dev", state: "ready", url: "https://pr-29.shop-api.example.dev", link: "https://pr-29.shop-api.example.dev" },
+        { label: "docs-pr-29.shop-api.example.dev", state: "deploying", url: "https://docs-pr-29.shop-api.example.dev", link: "https://github.com/acme/shop-api/actions/runs/1" },
+      ],
       fetchedAt: ago(1),
     },
     subscribe: true,
@@ -96,7 +130,12 @@ export const asks: Ask[] = [
     status: "open",
     title: "File an issue for the flaky tax-rate test?",
     actions: [
-      { id: "a1", label: "File the issue", kind: "send", prompt: "File an issue for the flaky tax-rate test" },
+      {
+        id: "a1",
+        label: "File the issue",
+        kind: "send",
+        prompt: "File an issue for the flaky tax-rate test",
+      },
       { id: "a2", label: "Not now", kind: "resolve" },
     ],
     updatedAt: ago(170),
@@ -109,7 +148,11 @@ export const asks: Ask[] = [
     kind: "pr",
     status: "in_progress",
     title: "PR #30 drop the legacy coupon code: merging",
-    links: [{ label: "PR #30", url: "https://github.com/acme/shop-api/pull/30" }],
+    links: [
+      { label: "PR #30", url: "https://github.com/acme/shop-api/pull/30" },
+      { label: "PR #31 (follow-up)", url: "https://github.com/acme/shop-api/pull/31" },
+      { label: "Coupon usage dashboard", url: "https://grafana.example.com/d/coupons" },
+    ],
     pr: {
       number: 30,
       url: "https://github.com/acme/shop-api/pull/30",
@@ -118,6 +161,10 @@ export const asks: Ask[] = [
       reviewDecision: null,
       checks: "pending",
       mergeable: "MERGEABLE",
+      deployments: [
+        { label: "shop-api-git-coupons-acme.vercel.app", state: "failed", url: "https://shop-api-git-coupons-acme.vercel.app", link: "https://vercel.com/acme/shop-api/deployments" },
+        { label: "Deploying", state: "deploying", link: "https://github.com/acme/shop-api/actions/runs/2" },
+      ],
       fetchedAt: ago(1),
     },
     updatedAt: ago(4),

@@ -1,22 +1,22 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
-import { Outbox, type AgentState, type Courier } from "../server/outbox";
-import { AskAlreadyClosedError, AskOwnerLiveError, AsksService, AskTargetNotLiveError, type ActLogEntry, type AdminLogEntry, type OwnerState as AdminOwnerState } from "../server/service";
+import { isWorking, Outbox, type AgentState, type Courier } from "../server/outbox";
+import { AskAlreadyClosedError, AskOwnerLiveError, AsksService, AskTargetNotLiveError, BACKGROUND_SKIP, type ActLogEntry, type AdminLogEntry, type OwnerState } from "../server/service";
 import { AskStore } from "../server/store";
-import { RunStatus, type OwnerState } from "../server/run-status";
-import { firstExpanded, latestRelays, OPEN_STATUSES, pillLabel, visibleActions, type Ask } from "../shared/asks";
+import { AskSchema, firstExpanded, latestRelays, OPEN_STATUSES, pillLabel, visibleActions, type Ask } from "../shared/asks";
 
 class FakeCourier implements Courier {
   states = new Map<string, AgentState>();
   sent: { agentId: string; text: string; messageId: string }[] = [];
   failNext = false;
+  failAlways = false;
   async state(agentId: string) {
     return this.states.get(agentId) ?? "idle";
   }
   async send(agentId: string, text: string, messageId: string) {
-    if (this.failNext) {
+    if (this.failNext || this.failAlways) {
       this.failNext = false;
       throw new Error("daemon said no");
     }
@@ -38,8 +38,14 @@ describe("asks", () => {
     dir = mkdtempSync(join(tmpdir(), "asks-"));
     store = new AskStore(dir);
     courier = new FakeCourier();
-    outbox = new Outbox(dir, courier, async (deliveries) => {
-      for (const delivery of deliveries) if (delivery.askId) await store.update(delivery.workspaceId, delivery.askId, { orphaned: true });
+    outbox = new Outbox(dir, courier, async (deliveries, reason) => {
+      for (const delivery of deliveries)
+        if (delivery.askId)
+          await store.update(
+            delivery.workspaceId,
+            delivery.askId,
+            reason === "gone" ? { orphaned: true } : { status: "open" },
+          );
     });
     service = new AsksService(store, outbox, async (agentId) => (agentId === AGENT ? WS : null));
   });
@@ -55,10 +61,85 @@ describe("asks", () => {
 
   it("numbers asks per workspace and persists them", async () => {
     const first = await service.callTool(AGENT, "ask_create", decision);
-    const second = await service.callTool(AGENT, "ask_create", { kind: "followup", title: "File issue for retention switch" });
-    expect(first.text).toMatch(/^A1 \[in_progress\] decision/);
+    const second = await service.callTool(AGENT, "ask_create", {
+      kind: "followup",
+      title: "File issue for retention switch",
+    });
+    expect(first.text).toMatch(/^A1 \[open\] decision/);
     expect(second.text).toMatch(/^A2 /);
     expect(new AskStore(dir).list(WS).map((ask) => ask.id)).toEqual(["A1", "A2"]);
+  });
+
+  it("Given legacy run-state markers, When loaded, Then only automatic in-progress asks reopen and the migration persists once", async () => {
+    // Given
+    await service.callTool(AGENT, "ask_create", decision);
+    const original = store.get(WS, "A1")!;
+    const outcome = { note: "Keep the answer", by: "human" as const, at: original.updatedAt };
+    const relayedTo = [{ agentId: "reader-1", at: original.updatedAt, batch: "batch-1", index: 0 }];
+    const cases = [
+      { status: "in_progress", autoStatus: true },
+      { status: "in_progress", autoStatus: false },
+      { status: "in_progress" },
+      { status: "open", autoStatus: true },
+      { status: "done", autoStatus: true },
+      { status: "dropped", autoStatus: true },
+    ] as const;
+    const asks = cases.map((legacy, index) => ({ ...original, id: `A${index + 1}`, outcome, relayedTo, ...legacy }));
+    const path = join(dir, "workspaces", `${encodeURIComponent(WS)}.json`);
+    writeFileSync(path, JSON.stringify({ nextId: 7, asks }));
+    const revived = new AskStore(dir);
+    const statuses = ["open", "in_progress", "in_progress", "open", "done", "dropped"] as const;
+    const expected = statuses.map((status, index) => ({ ...original, id: `A${index + 1}`, outcome, relayedTo, status }));
+
+    // When
+    const loaded = revived.list(WS);
+
+    // Then
+    expect(loaded).toEqual(expected);
+    expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({ nextId: 7, asks: expected });
+    // Preserve unusual whitespace to detect any rewrite on a cached read or a later process's first read.
+    const persisted = `${readFileSync(path, "utf8")}\n\n`;
+    writeFileSync(path, persisted);
+    expect(revived.list(WS)).toEqual(expected);
+    expect(new AskStore(dir).list(WS)).toEqual(expected);
+    expect(readFileSync(path, "utf8")).toBe(persisted);
+  });
+
+  it("rejects a bundled ask on create and update, saving nothing", async () => {
+    const bundled = await service.callTool(AGENT, "ask_create", {
+      kind: "review",
+      title: "Answer the 6 open questions",
+      actions: [{ label: "Approve as proposed", kind: "send", prompt: "Approve as proposed" }],
+    });
+    expect(bundled.isError).toBe(true);
+    expect(bundled.text).toMatch(/one ask per question/);
+    expect(store.list(WS)).toEqual([]);
+
+    await service.callTool(AGENT, "ask_create", decision);
+    const relabelled = await service.callTool(AGENT, "ask_update", {
+      id: "A1",
+      actions: [{ label: "Accept all recommendations", kind: "resolve" }],
+    });
+    expect(relabelled.isError).toBe(true);
+    expect(store.get(WS, "A1")?.actions.map((action) => action.label)).toEqual(["a: leave as is", "b: squash-only"]);
+  });
+
+  it("preserves Markdown source through creation, persistence and the response schema", async () => {
+    const body =
+      "# Plan\n\n```mermaid\nflowchart LR\nA --> B\n```\n\n[Guide][guide]\n\n[guide]: https://example.com";
+    await service.callTool(AGENT, "ask_create", { ...decision, body });
+    const [ask] = new AskStore(dir).list(WS);
+    expect(AskSchema.parse(ask).body).toBe(body);
+  });
+
+  it("records nothing for an agent in a background workspace, and tells it so", async () => {
+    let background = true;
+    const scoped = new AsksService(store, outbox, async () => WS, async () => background);
+    expect(await scoped.callTool(AGENT, "ask_create", decision)).toEqual({ text: BACKGROUND_SKIP });
+    expect(store.list(WS)).toEqual([]);
+    // The human opened the run's chat, so it isn't background any more.
+    background = false;
+    expect((await scoped.callTool(AGENT, "ask_create", decision)).text).toMatch(/^A1 /);
   });
 
   it("rejects a decision without two options, and a call with no agent id", async () => {
@@ -70,7 +151,13 @@ describe("asks", () => {
   it("delivers a human's choice to the owning agent once, and only after its turn ends", async () => {
     await service.callTool(AGENT, "ask_create", decision);
     courier.states.set(AGENT, "running");
-    const { ask, delivery } = await service.act({ workspaceId: WS, id: "A1", verb: "action", actionId: "a2", note: "and update AGENTS.md" });
+    const { ask, delivery } = await service.act({
+      workspaceId: WS,
+      id: "A1",
+      verb: "action",
+      actionId: "a2",
+      note: "and update AGENTS.md",
+    });
     await outbox.flush();
     expect(ask.status).toBe("done");
     expect(ask.outcome).toMatchObject({ label: "b: squash-only", by: "human" });
@@ -81,7 +168,38 @@ describe("asks", () => {
     await outbox.flush(AGENT);
     await outbox.flush(AGENT);
     expect(courier.sent).toHaveLength(1);
-    expect(courier.sent[0]!.text).toBe('[asks] A1 (Squash-only merges?) resolved: b: squash-only. Note from the human: "and update AGENTS.md"');
+    expect(courier.sent[0]!.text).toBe(
+      '[asks] A1 (Squash-only merges?) resolved: b: squash-only. Note from the human: "and update AGENTS.md"',
+    );
+  });
+
+  it("records the send action the human chose, so the in-progress card can show it", async () => {
+    await service.callTool(AGENT, "ask_create", {
+      kind: "pr",
+      title: "Ship the export fix",
+      actions: [{ label: "Merge (squash)", kind: "send", prompt: "Merge PR #30 with squash" }],
+    });
+    const { ask } = await service.act({ workspaceId: WS, id: "A1", verb: "action", actionId: "a1", note: "after lunch" });
+    expect(ask.status).toBe("in_progress");
+    expect(ask.outcome).toMatchObject({ actionId: "a1", label: "Merge (squash)", note: "after lunch", by: "human" });
+  });
+
+  it("steers a human's choice into a running turn when the provider can take it", async () => {
+    await service.callTool(AGENT, "ask_create", decision);
+    courier.states.set(AGENT, "steerable");
+    await service.act({ workspaceId: WS, id: "A1", verb: "action", actionId: "a1" });
+    await outbox.flush();
+    expect(courier.sent).toHaveLength(1);
+    expect(outbox.pending(AGENT)).toEqual([]);
+  });
+
+  it("keeps an in-progress ask open while its agent works a steerable turn", async () => {
+    await service.callTool(AGENT, "ask_create", { kind: "followup", title: "Retention switch" });
+    await service.callTool(AGENT, "ask_update", { id: "A1", status: "in_progress" });
+    courier.states.set(AGENT, "steerable");
+    const later = new Date(Date.now() + 7 * 24 * 3600 * 1000);
+    const reopened = await service.reopenStale(async (id) => isWorking(await courier.state(id)), later);
+    expect(reopened.map((ask) => ask.id)).toEqual([]);
   });
 
   it("batches several answers into one message", async () => {
@@ -102,15 +220,119 @@ describe("asks", () => {
       title: "PR #30 ready",
       actions: [{ label: "Merge", kind: "send", prompt: "Merge PR #30 with squash" }],
     });
-    const { ask } = await service.act({ workspaceId: WS, id: "A1", verb: "action", actionId: "a1" });
+    const { ask } = await service.act({
+      workspaceId: WS,
+      id: "A1",
+      verb: "action",
+      actionId: "a1",
+    });
     await outbox.flush();
     expect(ask.status).toBe("in_progress");
     expect(courier.sent[0]!.text).toContain("Merge PR #30 with squash");
     expect(courier.sent[0]!.text).toContain("call ask_resolve for A1");
 
     await service.callTool(AGENT, "ask_resolve", { id: "A1", note: "merged" });
-    expect(store.get(WS, "A1")).toMatchObject({ status: "done", outcome: { by: "agent", note: "merged" } });
+    expect(store.get(WS, "A1")).toMatchObject({
+      status: "done",
+      outcome: { by: "agent", note: "merged" },
+    });
     expect(courier.sent).toHaveLength(1);
+  });
+
+  it("tells the agent to keep a watched PR ask open while the PR still waits on the human", async () => {
+    await service.callTool(AGENT, "ask_create", {
+      kind: "pr",
+      title: "Request review on PR #30",
+      links: [{ label: "PR #30", url: "https://github.com/example/shop/pull/30" }],
+      subscribe: true,
+      actions: [
+        {
+          label: "Request review from alice",
+          kind: "send",
+          prompt: "Request review on PR #30 from alice",
+        },
+      ],
+    });
+    await service.callTool(AGENT, "ask_create", {
+      kind: "pr",
+      title: "PR #31 ready",
+      links: [{ label: "PR #31", url: "https://github.com/example/shop/pull/31" }],
+      actions: [{ label: "Merge", kind: "send", prompt: "Merge PR #31 with squash" }],
+    });
+    await service.act({ workspaceId: WS, id: "A1", verb: "action", actionId: "a1" });
+    await service.act({ workspaceId: WS, id: "A2", verb: "action", actionId: "a1" });
+    await outbox.flush();
+
+    const [watched, unwatched] = courier.sent.map((message) => message.text);
+    expect(watched).toContain("keep the ask in progress instead of resolving it");
+    expect(unwatched).not.toContain("keep the ask in progress");
+  });
+
+  it("new options on an in-progress ask hand it back to the human", async () => {
+    await service.callTool(AGENT, "ask_create", {
+      kind: "pr",
+      title: "PR #30 ready",
+      actions: [{ label: "Merge", kind: "send", prompt: "Merge PR #30 with squash" }],
+    });
+    await service.act({ workspaceId: WS, id: "A1", verb: "action", actionId: "a1" });
+    await service.callTool(AGENT, "ask_update", { id: "A1", body: "Working on it" });
+    expect(store.get(WS, "A1")!.status).toBe("in_progress");
+
+    await service.callTool(AGENT, "ask_update", {
+      id: "A1",
+      actions: [{ label: "I merged it", kind: "resolve" }],
+    });
+    expect(store.get(WS, "A1")!.status).toBe("open");
+
+    await service.callTool(AGENT, "ask_update", {
+      id: "A1",
+      actions: [{ label: "Retry", kind: "send" }],
+      status: "in_progress",
+    });
+    // Buttons on an in-progress ask can't be clicked, so an explicit in_progress doesn't hide them.
+    expect(store.get(WS, "A1")!.status).toBe("open");
+  });
+
+  it("new options don't reopen an ask whose click the agent hasn't received yet", async () => {
+    await service.callTool(AGENT, "ask_create", {
+      kind: "followup",
+      title: "Hide nav entries",
+      actions: [{ label: "Do it", kind: "send", prompt: "After #877 merges, open the PR" }],
+    });
+    courier.states.set(AGENT, "running");
+    await service.act({ workspaceId: WS, id: "A1", verb: "action", actionId: "a1" });
+    // Mid-turn, unaware of the click, the agent rewords the action.
+    await service.callTool(AGENT, "ask_update", {
+      id: "A1",
+      actions: [{ label: "Do it", kind: "send", prompt: "Open the PR" }],
+    });
+    expect(store.get(WS, "A1")!.status).toBe("in_progress");
+    expect(store.get(WS, "A1")!.actions[0]!.prompt).toBe("Open the PR");
+
+    courier.states.set(AGENT, "idle");
+    await outbox.flush();
+    expect(courier.sent).toHaveLength(1);
+  });
+
+  it("moves an open ask to in progress on a reply, and back to open on new options", async () => {
+    await service.callTool(AGENT, "ask_create", decision);
+    await service.act({ workspaceId: WS, id: "A1", verb: "reply", note: "Why not both?" });
+    expect(store.get(WS, "A1")).toMatchObject({ status: "in_progress", outcome: { note: "Why not both?", by: "human" } });
+    await outbox.flush();
+    expect(courier.sent).toHaveLength(1);
+
+    await service.callTool(AGENT, "ask_update", {
+      id: "A1",
+      actions: [{ label: "Both", kind: "resolve" }, { label: "Squash only", kind: "resolve" }],
+    });
+    expect(store.get(WS, "A1")!.status).toBe("open");
+  });
+
+  it("leaves the status of an ask nobody waits on when the human replies", async () => {
+    await service.callTool(AGENT, "ask_create", decision);
+    await service.callTool(AGENT, "ask_update", { id: "A1", status: "done" });
+    await service.act({ workspaceId: WS, id: "A1", verb: "reply", note: "One more thing" });
+    expect(store.get(WS, "A1")!.status).toBe("done");
   });
 
   it("survives a restart with messages still pending", async () => {
@@ -130,6 +352,22 @@ describe("asks", () => {
     await outbox.flush();
     expect(courier.sent).toHaveLength(1);
     expect(outbox.pending()).toHaveLength(0);
+  });
+
+  it("hands a click back to the human when it can't be delivered", async () => {
+    await service.callTool(AGENT, "ask_create", {
+      kind: "pr",
+      title: "Merge PR #30?",
+      actions: [{ label: "Merge", kind: "send", prompt: "Merge PR #30 with squash" }],
+    });
+    courier.failAlways = true;
+    await service.act({ workspaceId: WS, id: "A1", verb: "action", actionId: "a1" });
+    expect(store.get(WS, "A1")?.status).toBe("in_progress");
+    for (let attempt = 0; attempt < 5; attempt++) await outbox.flush();
+    expect(outbox.pending()).toHaveLength(0);
+    // Back to open, so the human sees the buttons again instead of an ask nobody works on.
+    expect(store.get(WS, "A1")?.status).toBe("open");
+    expect(store.get(WS, "A1")?.orphaned).toBeFalsy();
   });
 
   it("orphans an open ask whose agent is gone, and stops notifying", async () => {
@@ -169,15 +407,21 @@ describe("asks", () => {
     await service.callTool(AGENT, "ask_create", { kind: "followup", title: "Second here" });
     await service.act({ workspaceId: "wks_2", id: "A2", verb: "drop" });
     expect(courier.sent.map((sent) => sent.agentId)).toEqual(["agent-2"]);
-    expect(store.get(WS, "A2")?.status).toBe("in_progress");
+    expect(store.get(WS, "A2")?.status).toBe("open");
   });
 
-  it("lists only open asks by default, and only the caller's with scope mine", async () => {
+  it("lists active asks (open and in progress) by default, labelled by status", async () => {
     await service.callTool(AGENT, "ask_create", decision);
     await service.callTool(AGENT, "ask_create", { kind: "question", title: "Other" });
+    await service.callTool(AGENT, "ask_create", { kind: "followup", title: "Later" });
     await service.callTool(AGENT, "ask_update", { id: "A2", status: "dropped" });
-    expect((await service.callTool(AGENT, "ask_list", {})).text).toBe("A1 [in_progress] decision: Squash-only merges?");
-    expect((await service.callTool(AGENT, "ask_list", { status: "all" })).text.split("\n")).toHaveLength(2);
+    await service.callTool(AGENT, "ask_update", { id: "A3", status: "in_progress" });
+    const active = ["A1 [open] decision: Squash-only merges?", "A3 [in_progress] followup: Later"];
+    expect((await service.callTool(AGENT, "ask_list", {})).text.split("\n")).toEqual(active);
+    expect((await service.callTool(AGENT, "ask_list", { status: "active" })).text.split("\n")).toEqual(active);
+    expect(
+      (await service.callTool(AGENT, "ask_list", { status: "all" })).text.split("\n"),
+    ).toHaveLength(3);
   });
 
   describe("cached PR snapshot when an update changes links", () => {
@@ -217,7 +461,7 @@ describe("asks", () => {
     });
   });
 
-  it("Given an automatically in-progress ask, When its send action is used, Then unsent actions were visible and sent actions are hidden", async () => {
+  it("Given an open ask, When its send action is used, Then unsent actions were visible and sent actions are hidden", async () => {
     // Given
     await service.callTool(AGENT, "ask_create", {
       kind: "followup", title: "Approve follow-up",
@@ -231,21 +475,32 @@ describe("asks", () => {
     expect(visibleActions(store.get(WS, "A1")!).map((action) => action.label)).toEqual(["Inspect"]);
   });
 
-  it("Given reconciliation awaits owner state, When a human sends before it resumes, Then the send stays hidden and cannot deliver twice", async () => {
+  it("Given an open ask, When relay and a human send run concurrently, Then relay preserves the human's choice and a second send is refused", async () => {
     // Given
     await service.callTool(AGENT, "ask_create", { kind: "followup", title: "Approve", actions: [{ label: "Approve", kind: "send" }] });
-    let resume!: (state: OwnerState) => void;
-    const state = new Promise<OwnerState>((resolve) => { resume = resolve; });
-    const reconcile = new RunStatus(store, () => {}).reconcile(() => state);
+    courier.states.set(AGENT, "running");
+    expect(store.get(WS, "A1")?.status).toBe("open");
     // When
-    await service.act({ workspaceId: WS, id: "A1", verb: "action", actionId: "a1" });
-    resume("idle");
-    await reconcile;
+    await Promise.all([
+      service.relay({ readerAgentId: "reader-1", asks: [{ workspaceId: WS, id: "A1" }] }),
+      service.act({ workspaceId: WS, id: "A1", verb: "action", actionId: "a1" }),
+    ]);
     // Then
-    expect(store.get(WS, "A1")).toMatchObject({ status: "in_progress", autoStatus: false });
-    expect(visibleActions(store.get(WS, "A1")!)).toEqual([]);
+    const stored = new AskStore(dir).get(WS, "A1")!;
+    expect(stored).toMatchObject({
+      status: "in_progress",
+      outcome: { actionId: "a1", label: "Approve", by: "human" },
+      relayedTo: [{ agentId: "reader-1" }],
+    });
+    expect(visibleActions(stored)).toEqual([]);
     await expect(service.act({ workspaceId: WS, id: "A1", verb: "action", actionId: "a1" })).rejects.toThrow(/already sent/);
+    expect(courier.sent).toEqual([]);
+    expect(outbox.pending(AGENT)).toHaveLength(1);
+    courier.states.set(AGENT, "idle");
+    await outbox.flush(AGENT);
+    await outbox.flush(AGENT);
     expect(courier.sent).toHaveLength(1);
+    expect(outbox.pending(AGENT)).toEqual([]);
   });
 
   it("Given an ask with a send action, When two sends start concurrently, Then one is applied, the other is refused, and one delivery is queued", async () => {
@@ -448,14 +703,14 @@ describe("asks", () => {
     const TARGET = "agent-2";
     const NEIGHBOR = "agent-3";
     const workspaces: Record<string, string> = { [AGENT]: WS, [TARGET]: OTHER_WS, [NEIGHBOR]: WS };
-    let states: Map<string, AdminOwnerState>;
+    let states: Map<string, OwnerState>;
     let log: Mock<(entry: ActLogEntry | AdminLogEntry) => void>;
     let admin: AsksService;
 
     beforeEach(async () => {
       states = new Map();
       log = vi.fn();
-      admin = new AsksService(store, outbox, async (agentId) => workspaces[agentId] ?? null, log, () => {}, async (agentId) => states.get(agentId) ?? "idle");
+      admin = new AsksService(store, outbox, async (agentId) => workspaces[agentId] ?? null, undefined, undefined, log, async (agentId) => states.get(agentId) ?? "idle");
       await admin.callTool(AGENT, "ask_create", decision);
     });
 
@@ -471,14 +726,13 @@ describe("asks", () => {
       expect(moved).toEqual(copy);
       expect(copy).toMatchObject({ ownerAgentId: TARGET, status: "open", title: original.title, actions: original.actions });
       expect(copy?.outcome).toBeUndefined();
-      expect(copy?.autoStatus).toBeUndefined();
       const old = new AskStore(dir).get(WS, "A1");
       expect(from).toEqual(old);
       expect(old?.status).toBe("dropped");
       expect(old?.outcome).toMatchObject({ by: "agent", note: `Moved to ${OTHER_WS}/A1 (owner ${AGENT} closed) by cos-1: owner session ended` });
       expect(courier.sent).toEqual([{ agentId: TARGET, text: expect.stringMatching(/^\[asks\] A1 \(Squash-only merges\?\) is now yours\. It moved from wks_1\/A1/), messageId: expect.any(String) }]);
       expect(log).toHaveBeenCalledTimes(1);
-      expect(log).toHaveBeenCalledWith(expect.objectContaining({ verb: "reassign", ownerAgentId: AGENT, ownerState: "closed", movedTo: `${OTHER_WS}/A1`, before: "in_progress", after: "dropped" }));
+      expect(log).toHaveBeenCalledWith(expect.objectContaining({ verb: "reassign", ownerAgentId: AGENT, ownerState: "closed", movedTo: `${OTHER_WS}/A1`, before: "open", after: "dropped" }));
       expect(log.mock.calls[0]![0].error).toBeUndefined();
     });
 
@@ -490,8 +744,8 @@ describe("asks", () => {
       // Then
       expect(moved.id).toBe("A1");
       expect(store.list(WS)).toHaveLength(1);
+      expect(moved.outcome).toBeUndefined();
       expect(store.get(WS, "A1")).toMatchObject({ ownerAgentId: NEIGHBOR, status: "open" });
-      expect(store.get(WS, "A1")?.autoStatus).toBeUndefined();
       expect(log).toHaveBeenCalledTimes(1);
       expect(log).toHaveBeenCalledWith(expect.objectContaining({ verb: "reassign", movedTo: `${WS}/A1`, after: "open" }));
     });
@@ -542,7 +796,7 @@ describe("asks", () => {
       expect(courier.sent).toEqual([]);
       expect(outbox.pending()).toEqual([]);
       expect(log).toHaveBeenCalledTimes(1);
-      expect(log).toHaveBeenCalledWith(expect.objectContaining({ verb: "close", by: "cos-1", reason: "superseded by A7", ownerState: "closed", before: "in_progress", after: "done" }));
+      expect(log).toHaveBeenCalledWith(expect.objectContaining({ verb: "close", by: "cos-1", reason: "superseded by A7", ownerState: "closed", before: "open", after: "done" }));
     });
 
     it("Given an already-done ask, When it is closed, Then it throws AskAlreadyClosedError and logs the refusal", async () => {

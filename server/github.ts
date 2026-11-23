@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
-import { execCommand } from "@getpaseo/plugin/server";
-import { OPEN_STATUSES, prUrlOf, type Ask, type PrState } from "../shared/asks";
+import { OPEN_STATUSES, prUrlOf, type Ask, type Deployment, type PrState } from "../shared/asks";
+import { fetchDeployments } from "./deployments";
+import { RateLimited, type Gh } from "./gh";
 
 // The daemon is often launched from the Dock with a bare PATH, so look where gh usually lives.
 const GH_CANDIDATES = ["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh"];
@@ -17,13 +18,17 @@ interface CheckItem {
 
 export type FetchPr = (url: string) => Promise<PrState>;
 
-export function ghFetcher(gh: string): FetchPr {
+export function ghFetcher(gh: Gh): FetchPr {
   return async (url) => {
-    const { stdout } = await execCommand(
-      gh,
-      ["pr", "view", url, "--json", "number,url,state,isDraft,reviewDecision,mergeable,statusCheckRollup"],
-      { timeout: 20_000, env: { ...process.env, GH_PROMPT_DISABLED: "1" } },
-    );
+    // Deployments are extra: a failed lookup leaves them unset, not the PR line broken. A spent quota fails the PR
+    // view too, which reports it.
+    const deployments = fetchDeployments(gh, url).catch((error): Deployment[] | undefined => {
+      if (!(error instanceof RateLimited)) {
+        console.error(`[asks] deployments lookup failed for ${url}`, error instanceof Error ? error.message : error);
+      }
+      return undefined;
+    });
+    const stdout = await gh.run(["pr", "view", url, "--json", "number,url,state,isDraft,reviewDecision,mergeable,statusCheckRollup"]);
     const pr = JSON.parse(stdout);
     return {
       number: pr.number,
@@ -33,6 +38,7 @@ export function ghFetcher(gh: string): FetchPr {
       reviewDecision: pr.reviewDecision || null,
       mergeable: pr.mergeable ?? "UNKNOWN",
       checks: summarizeChecks(pr.statusCheckRollup ?? []),
+      deployments: await deployments,
       fetchedAt: new Date().toISOString(),
     };
   };
@@ -49,16 +55,36 @@ export function summarizeChecks(items: CheckItem[]): PrState["checks"] {
 }
 
 /** What changed between two snapshots, in words an agent can act on; null when nothing it cares about did. */
-export function describePrChange(before: PrState, after: PrState): string | null {
+export function describePrChange(before: PrState, after: PrState, { review = true } = {}): string | null {
   const changes: string[] = [];
   if (before.state !== after.state) changes.push(after.state === "MERGED" ? "merged" : after.state === "CLOSED" ? "closed without merging" : "reopened");
   if (before.checks !== after.checks && (after.checks === "failing" || after.checks === "passing")) changes.push(`checks ${after.checks}`);
-  if (before.reviewDecision !== after.reviewDecision && after.reviewDecision) {
-    changes.push(`review: ${after.reviewDecision.toLowerCase().replace(/_/g, " ")}`);
+  for (const deployment of after.deployments ?? []) {
+    if (deployment.state !== "ready" || !before.deployments) continue;
+    const was = before.deployments.find((entry) => entry.url === deployment.url);
+    if (was?.state !== "ready") changes.push(`preview ready: ${deployment.url}`);
+  }
+  if (review && before.reviewDecision !== after.reviewDecision && after.reviewDecision) {
+    const decision = `review: ${after.reviewDecision.toLowerCase().replace(/_/g, " ")}`;
+    // An approval often carries comments; agents told only "approved" offered Merge without reading them.
+    const unread = after.reviewDecision === "APPROVED" && after.state === "OPEN";
+    changes.push(unread ? `${decision} (read the review body and comments before offering Merge)` : decision);
   }
   return changes.length ? `PR #${after.number} ${changes.join(", ")}` : null;
 }
 
+export function changesNewlyRequested(before: PrState, after: PrState): boolean {
+  return before.reviewDecision !== "CHANGES_REQUESTED" && after.reviewDecision === "CHANGES_REQUESTED";
+}
+
 export function watchedAsks(asks: readonly Ask[]): Ask[] {
-  return asks.filter((ask) => OPEN_STATUSES.includes(ask.status) && prUrlOf(ask));
+  return asks.filter((ask) => {
+    const url = prUrlOf(ask);
+    if (!url || !OPEN_STATUSES.includes(ask.status)) return false;
+    // A held review's ask links the same PR as the PR ask it came from, so polling it would only repeat that call.
+    if (ask.heldReview) return false;
+    // A merged PR never changes again. Agents leave merged PR asks open by the hundred, and polling them spent the
+    // GitHub quota every other gh user on the machine shares. A relinked ask's snapshot is its old PR, so it still polls.
+    return !(ask.pr?.state === "MERGED" && ask.pr.url === url);
+  });
 }

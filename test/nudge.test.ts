@@ -1,46 +1,122 @@
 import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
 import { describe, expect, it } from "vitest";
 import type { Ask } from "../shared/asks";
-import { endsWithQuestion, NUDGE, REFRESH, shouldNudge } from "../server/nudge";
+import { endsWithQuestion, NUDGE, parseAnswer, REFRESH, shouldNudge } from "../server/nudge";
 import { Outbox, type AgentState, type Courier } from "../server/outbox";
 import { AsksService } from "../server/service";
+import { pickCaller } from "../server/agents";
+import { isAsksPermission } from "../server/permissions";
 import { AskStore } from "../server/store";
 
 const user = (text: string) => ({ type: "user_message", text }) as AgentTimelineItem;
 const reply = (text: string) => ({ type: "assistant_message", text }) as AgentTimelineItem;
-const tool = (name: string) => ({ type: "tool_call", name, callId: name, status: "completed", error: null }) as unknown as AgentTimelineItem;
+const tool = (name: string) =>
+  ({
+    type: "tool_call",
+    name,
+    callId: name,
+    status: "completed",
+    error: null,
+  }) as unknown as AgentTimelineItem;
 
 describe("shouldNudge", () => {
-  it("nudges a turn that ends on a question with no ask", () => {
-    expect(shouldNudge([user("try PR 11"), tool("Bash"), reply("Two ways forward.\n\nWhich one?")])).toBe(true);
+  const yes = async () => true;
+  const none = () => false;
+  const openA3 = (id: string) => id === "A3";
+
+  it("nudges a turn that ends on a question with no ask", async () => {
+    expect(
+      await shouldNudge([
+        user("try PR 11"),
+        tool("Bash"),
+        reply("Two ways forward.\n\nWhich one?"),
+      ], none),
+    ).toBe(true);
   });
 
-  it("does not nudge when the turn used an asks tool", () => {
-    expect(shouldNudge([user("go"), tool("mcp__asks__ask_create"), reply("Which one?")])).toBe(false);
+  it("does not nudge when the turn used an asks tool", async () => {
+    expect(
+      await shouldNudge([user("go"), tool("mcp__asks__ask_create"), reply("Which one?")], none, yes),
+    ).toBe(false);
   });
 
-  it("does not nudge when the reply points to an existing ask", () => {
-    expect(shouldNudge([user("go"), reply("Still waiting on you, see A3. Which one?")])).toBe(false);
+  it("does not nudge when the reply points to an existing ask", async () => {
+    expect(
+      await shouldNudge([user("go"), reply("Still waiting on you, see A3. Which one?")], openA3, yes),
+    ).toBe(false);
   });
 
-  it("does not nudge a reply that only reports", () => {
-    expect(shouldNudge([user("go"), reply("Is it fixed? Yes.\n\nTests pass.")])).toBe(false);
+  it("nudges when the reply names only asks from elsewhere", async () => {
+    expect(
+      await shouldNudge(
+        [user("go"), reply("If A30 is truly unused, A29 is worth questioning too. Reply send it?")],
+        openA3,
+        yes,
+      ),
+    ).toBe(true);
   });
 
-  it("looks only at the latest turn", () => {
-    expect(shouldNudge([user("a"), reply("Which one?"), user("b"), reply("Done.")])).toBe(false);
-    expect(shouldNudge([user("a"), tool("mcp__asks__ask_list"), reply("ok"), user("b"), reply("Which one?")])).toBe(true);
+  it("does not nudge a reply that only reports", async () => {
+    expect(await shouldNudge([user("go"), reply("Is it fixed? Yes.\n\nTests pass.")], none)).toBe(false);
   });
 
-  it("never nudges the answer to a nudge", () => {
-    expect(shouldNudge([user(NUDGE), reply("Which one?")])).toBe(false);
+  it("looks only at the latest turn", async () => {
+    expect(await shouldNudge([user("a"), reply("Which one?"), user("b"), reply("Done.")], none)).toBe(
+      false,
+    );
+    expect(
+      await shouldNudge([
+        user("a"),
+        tool("mcp__asks__ask_list"),
+        reply("ok"),
+        user("b"),
+        reply("Which one?"),
+      ], none),
+    ).toBe(true);
   });
 
-  it("joins streamed reply chunks", () => {
-    expect(shouldNudge([user("go"), reply("Which "), reply("one?")])).toBe(true);
+  it("never nudges the answer to a nudge", async () => {
+    expect(await shouldNudge([user(NUDGE), reply("Which one?")], none, yes)).toBe(false);
+  });
+
+  it("joins streamed reply chunks", async () => {
+    expect(await shouldNudge([user("go"), reply("Which "), reply("one?")], none)).toBe(true);
+    let seen = "";
+    await shouldNudge([user("go"), reply("Which "), reply("one?")], none,
+      async (text) => ((seen = text), true),
+    );
+    expect(seen).toBe("Which one?");
+  });
+
+  it("lets the classifier catch requests without a question mark", async () => {
+    const turn = [user("go"), reply("Decide on the migration, then re-review.")];
+    expect(await shouldNudge(turn, none)).toBe(false);
+    expect(await shouldNudge(turn, none, yes)).toBe(true);
+    expect(await shouldNudge([user("go"), reply("Which one?")], none, async () => false)).toBe(false);
+  });
+
+  it("falls back to the question mark check when the classifier fails", async () => {
+    const fail = async () => Promise.reject(new Error("provider down"));
+    expect(await shouldNudge([user("go"), reply("Which one?")], none, fail)).toBe(true);
+    expect(await shouldNudge([user("go"), reply("Done.")], none, fail)).toBe(false);
+  });
+});
+
+describe("parseAnswer", () => {
+  it("reads the answer from bare, fenced or chatty output", () => {
+    expect(parseAnswer('{"waitsOnHuman": true}')).toBe(true);
+    expect(parseAnswer('```json\n{"waitsOnHuman":false}\n```\n\nThe reply only reports.')).toBe(
+      false,
+    );
+    expect(parseAnswer("**waitsOnHuman: true**\n\nThe reply asks the human to choose.")).toBe(true);
+    // Haiku on Claude ignores outputSchema and answers in prose (seen live).
+    expect(parseAnswer("Set `waitsOnHuman` to **true**. The reply ends with a question to the human.")).toBe(true);
+    expect(parseAnswer("waitsOnHuman should be false: it only reports.")).toBe(false);
+    expect(parseAnswer("waitsOnHuman is unclear; true and false both fit.")).toBe(null);
+    expect(parseAnswer("I think yes.")).toBe(null);
   });
 
   describe("re-shown card an open ask already records", () => {
@@ -51,34 +127,34 @@ describe("shouldNudge", () => {
     const card = [user("show it again"), reply("Pick the nudge fix\n\nOption one or two?")];
     const idCard = [user("show it again"), reply("Card file decision-toolu_01AbC.\n\nWhich option?")];
 
-    it("does not nudge when the card's decision id is in an open ask's body", () => {
+    it("does not nudge when the card's decision id is in an open ask's body", async () => {
       // Given an open decision ask whose body names the card file
       const open = ask({ title: "Unrelated heading", body: "card: decision-toolu_01AbC.md" });
       // When the reply re-shows that card, Then no nudge
-      expect(shouldNudge(idCard, [open])).toBe(false);
+      expect(await shouldNudge(idCard, () => false, undefined, [open])).toBe(false);
     });
 
-    it("does not nudge when the reply carries an open ask's title", () => {
+    it("does not nudge when the reply carries an open ask's title", async () => {
       // Given an open ask titled like the card
       const open = ask({ title: "  pick the NUDGE   fix " });
       // When the reply re-shows the card, Then no nudge
-      expect(shouldNudge(card, [open])).toBe(false);
+      expect(await shouldNudge(card, () => false, undefined, [open])).toBe(false);
     });
 
-    it("nudges when the matching ask is done or dropped", () => {
+    it("nudges when the matching ask is done or dropped", async () => {
       // Given closed asks that match by id and by title
       const closed = [ask({ status: "done", body: "decision-toolu_01AbC" }), ask({ status: "dropped" })];
       // When either card is re-shown, Then the nudge still fires
-      expect(shouldNudge(idCard, closed)).toBe(true);
-      expect(shouldNudge(card, closed)).toBe(true);
+      expect(await shouldNudge(idCard, () => false, undefined, closed)).toBe(true);
+      expect(await shouldNudge(card, () => false, undefined, closed)).toBe(true);
     });
 
-    it("nudges a question when the only open ask is unrelated", () => {
+    it("nudges a question when the only open ask is unrelated", async () => {
       // Given an open ask about something else
       const other = ask({ title: "Review the billing PR", body: "decision-toolu_other" });
       // When the reply asks a different question, Then the nudge fires
-      expect(shouldNudge(idCard, [other])).toBe(true);
-      expect(shouldNudge(card, [other])).toBe(true);
+      expect(await shouldNudge(idCard, () => false, undefined, [other])).toBe(true);
+      expect(await shouldNudge(card, () => false, undefined, [other])).toBe(true);
     });
   });
 });
@@ -95,9 +171,16 @@ describe("refresh", () => {
   const setup = (state: AgentState) => {
     const dir = mkdtempSync(join(tmpdir(), "asks-"));
     const sent: string[] = [];
-    const courier: Courier = { state: async () => state, send: async (_agent, text) => void sent.push(text) };
+    const courier: Courier = {
+      state: async () => state,
+      send: async (_agent, text) => void sent.push(text),
+    };
     const outbox = new Outbox(dir, courier);
-    return { sent, outbox, service: new AsksService(new AskStore(dir), outbox, async () => "wks_1") };
+    return {
+      sent,
+      outbox,
+      service: new AsksService(new AskStore(dir), outbox, async () => "wks_1"),
+    };
   };
 
   it("sends now to an idle agent", async () => {
@@ -112,5 +195,60 @@ describe("refresh", () => {
     await service.refresh("agent");
     expect(sent).toEqual([]);
     expect(outbox.pending("agent")).toHaveLength(1);
+  });
+});
+
+describe("isAsksPermission", () => {
+  it("recognises Claude and Codex prompts for the asks tools only", () => {
+    expect(isAsksPermission({ kind: "tool", name: "mcp__asks__ask_create" })).toBe(true);
+    expect(
+      isAsksPermission({
+        kind: "tool",
+        name: "CodexMcpElicitation",
+        metadata: { serverName: "asks" },
+      }),
+    ).toBe(true);
+    expect(
+      isAsksPermission({
+        kind: "tool",
+        name: "CodexMcpElicitation",
+        metadata: { serverName: "github" },
+      }),
+    ).toBe(false);
+    expect(isAsksPermission({ kind: "tool", name: "Bash" })).toBe(false);
+  });
+});
+
+describe("pickCaller", () => {
+  const agent = (id: string, cwd: string, status = "idle", archivedAt: string | null = null) => ({
+    id,
+    cwd,
+    status,
+    archivedAt,
+  });
+  const home = homedir();
+
+  it("picks the agent mid-turn in the bridge's directory", () => {
+    const agents = [
+      agent("a", `${home}/w/one`),
+      agent("b", "~/w/one", "running"),
+      agent("c", `${home}/w/two`, "running"),
+    ];
+    expect(pickCaller(agents, `${home}/w/one`)).toBe("b");
+  });
+
+  it("ignores agents whose bridge sends its own ID, so a Claude agent beside a Codex one is not ambiguous", () => {
+    const claude = { ...agent("a", "/w", "running"), provider: "claude" };
+    const codex = { ...agent("b", "/w", "running"), provider: "codex" };
+    expect(pickCaller([claude, codex], "/w")).toBe("b");
+    expect(pickCaller([claude], "/w")).toBe(null);
+  });
+
+  it("falls back to the only live agent there, and gives up when it cannot tell", () => {
+    expect(pickCaller([agent("a", "/w"), agent("b", "/w", "running", "2026-01-01")], "/w")).toBe(
+      "a",
+    );
+    expect(pickCaller([agent("a", "/w"), agent("b", "/w")], "/w")).toBe(null);
+    expect(pickCaller([agent("a", "/w", "running"), agent("b", "/w", "running")], "/w")).toBe(null);
   });
 });

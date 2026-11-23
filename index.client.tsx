@@ -1,99 +1,207 @@
 import type {
+  PluginButtonBehavior,
   PluginButtonContentProps,
   PluginButtonRegistration,
   PluginClientContext,
   PluginScreenProps,
   PluginSidebarItemProps,
+  PluginTimelineItemProps,
   PluginWorkspacePanelProps,
 } from "@getpaseo/plugin/client";
 import { SidebarRow } from "@getpaseo/plugin/client/ui";
+import { useEffect } from "react";
 import { Text } from "react-native";
-import { AgentAsks, AsksView, POLL_MS, useAsks } from "./client/AsksView";
-import { listAsks, pillLabel } from "./shared/asks";
+import { AsksMessage } from "./client/AsksMessage";
+import { onAsksChanged } from "./client/changes";
+import { agentOpenerFor, type OpenAgent } from "./client/navigation";
+import { inboxReview, OpenPrContext } from "./client/inbox";
+import { AgentAsks, AskCard, AsksView, POLL_MS, useAsks, WorkspaceAskEntry } from "./client/AsksView";
+import { SettingsScreen } from "./client/SettingsScreen";
+import { observeSnoozedWorkspaces, snoozedWorkspaceIds, useSnoozedWorkspaceIds } from "./client/snoozed";
+import { listAsks, pillLabel, readerAsks, waitingCount, workspaceAsks, type Ask } from "./shared/asks";
+import { createWorkspaceSummaries, type SummaryEntryProps } from "./client/summary";
+import { ASKS_MESSAGE, AsksMessageSchema, parseAsksMessage, type AsksMessage as AsksMessageData } from "./shared/messages";
+import { ASK_CARD, AskCardSchema, askCardFor, type AskCard as AskCardData } from "./shared/timeline";
 
-function WorkspacePanel({ theme, layout, workspaceId, navigation }: PluginWorkspacePanelProps) {
+function WorkspacePanel(props: PluginWorkspacePanelProps) {
+  const { theme, layout, workspaceId, navigation } = props;
   return (
-    <AsksView
-      theme={theme}
-      compact={layout.compact}
-      workspaceId={workspaceId}
-      openAgent={navigation ? (agentId) => navigation.openAgent({ agentId }) : undefined}
-    />
+    <OpenPrContext.Provider value={inboxReview(props)}>
+      <AsksView
+        theme={theme}
+        compact={layout.compact}
+        workspaceId={workspaceId}
+        openAgent={navigation ? agentOpenerFor(navigation) : undefined}
+      />
+    </OpenPrContext.Provider>
   );
 }
 
-function GlobalScreen({ theme, layout, navigation }: PluginScreenProps) {
+/** A waiting ask in the host's Overview, answered in place instead of in the Asks panel. */
+function OverviewAskEntry(props: SummaryEntryProps) {
+  const { theme, layout, workspaceId, entryId, defaultExpanded, expanded, onExpandedChange, navigation } =
+    props;
   return (
-    <AsksView
-      theme={theme}
-      compact={layout.compact}
-      openAgent={navigation ? (agentId) => navigation.openAgent({ agentId }) : undefined}
-    />
+    <OpenPrContext.Provider value={inboxReview(props)}>
+      <WorkspaceAskEntry
+        theme={theme}
+        compact={layout.compact}
+        workspaceId={workspaceId}
+        askId={entryId}
+        defaultExpanded={defaultExpanded}
+        expanded={expanded}
+        onExpandedChange={onExpandedChange}
+        openAgent={navigation ? agentOpenerFor(navigation) : undefined}
+      />
+    </OpenPrContext.Provider>
   );
+}
+
+/**
+ * Older hosts give chat cards and pill popovers no `navigation`, so there they open an agent by visiting
+ * the Asks screen with `open`, which has navigation and hands off at once. Set in `contribute`.
+ */
+let openAgentViaScreen: OpenAgent | undefined;
+
+type Navigation = PluginScreenProps["navigation"];
+
+/** Opens agents through the host's navigation when it passes one (FSH fork), else via the Asks screen. */
+function agentOpener(props: object): OpenAgent | undefined {
+  const navigation = (props as { navigation?: Navigation }).navigation;
+  return navigation ? agentOpenerFor(navigation) : openAgentViaScreen;
+}
+
+function GlobalScreen(props: PluginScreenProps) {
+  const { theme, layout, navigation, params } = props;
+  const open = params.open;
+  useEffect(() => {
+    if (open && navigation) navigation.openAgent({ agentId: open });
+  }, [open, navigation]);
+  return (
+    <OpenPrContext.Provider value={inboxReview(props)}>
+      <AsksView
+        theme={theme}
+        compact={layout.compact}
+        openAgent={navigation ? agentOpenerFor(navigation) : undefined}
+      />
+    </OpenPrContext.Provider>
+  );
+}
+
+/** The FSH host's needs-input orange; older hosts only have the status warning. */
+function attentionColor(theme: PluginSidebarItemProps["theme"]): string {
+  return (theme.colors as { attention?: string }).attention ?? theme.colors.statusWarning;
 }
 
 function SidebarItem({ theme, currentScreen, openScreen }: PluginSidebarItemProps) {
   const asks = useAsks();
-  const waiting = asks.data?.asks.filter((ask) => ask.status === "open").length ?? 0;
+  const snoozed = useSnoozedWorkspaceIds();
+  const waiting = waitingCount(asks.data?.asks ?? [], snoozed);
   return (
     <SidebarRow
-      icon="Inbox"
+      icon="MessageCircleQuestionMark"
       active={currentScreen?.screenId === "asks"}
       onPress={() => openScreen({ screenId: "asks" })}
-      trailing={waiting > 0 ? <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>{waiting}</Text> : undefined}
+      trailing={waiting > 0 ? <Text style={{ color: attentionColor(theme), fontSize: 12, fontWeight: "600" }}>{waiting}</Text> : undefined}
     />
   );
 }
 
-/** The pill's popover. Paseo caps plugin popovers at 420 wide, so on wide layouts it offers the Asks panel, which has the room. */
-function pillPopover(client: PluginClientContext) {
-  return function PillPopover({ theme, layout, workspaceId, close, ...context }: PluginButtonContentProps) {
-    if (context.context !== "agent") return null;
-    const openWide = () => {
-      close();
-      client.openPanel("asks", { workspaceId, agentId: context.agentId });
-    };
-    return (
-      <AgentAsks
-        theme={theme}
-        compact={layout.compact}
-        workspaceId={workspaceId}
-        agentId={context.agentId}
-        onOpenWide={layout.compact ? undefined : openWide}
-      />
-    );
+function TimelineCard(props: PluginTimelineItemProps<AskCardData>) {
+  const { theme, layout, agentId, item } = props;
+  return (
+    <OpenPrContext.Provider value={inboxReview(props)}>
+      <AskCard theme={theme} compact={layout.compact} agentId={agentId} openAgent={agentOpener(props)} {...item.data} />
+    </OpenPrContext.Provider>
+  );
+}
+
+function TimelineMessage({ theme, item }: PluginTimelineItemProps<AsksMessageData>) {
+  return <AsksMessage theme={theme} {...item.data} />;
+}
+
+function PillPopover(props: PluginButtonContentProps & { onOpenWide?: () => void }) {
+  const { theme, layout, workspaceId, close, onOpenWide, ...context } = props;
+  if (context.context !== "agent") return null;
+  const open = agentOpener(props);
+  const openAgent: OpenAgent | undefined = open
+    ? (agentId, position) => {
+        close();
+        open(agentId, position);
+      }
+    : undefined;
+  const openInbox = inboxReview(props);
+  const openPr = openInbox
+    ? (prUrl: string) => {
+        close();
+        openInbox(prUrl);
+      }
+    : undefined;
+  return (
+    <OpenPrContext.Provider value={openPr}>
+      <AgentAsks theme={theme} compact={layout.compact} workspaceId={workspaceId} agentId={context.agentId} openAgent={openAgent} onOpenWide={onOpenWide} />
+    </OpenPrContext.Provider>
+  );
+}
+
+/** Counts the same own and relayed asks the agent's pill lists, including in-progress work. */
+function pillFace(asks: readonly Ask[], agentId: string): { label: string; visible: boolean } {
+  return {
+    label: pillLabel(asks, agentId),
+    visible: readerAsks(asks, agentId).some((ask) => ask.status === "open" || ask.status === "in_progress"),
   };
 }
 
-/** A composer pill per agent with its open asks; pressing it shows them and a Refresh. */
+/** A composer pill per agent with own or relayed asks; pressing it shows them and a Refresh. */
 function contributePills(client: PluginClientContext): () => void {
-  const pills = new Map<string, PluginButtonRegistration>();
+  const pills = new Map<string, { workspaceId: string; pill: PluginButtonRegistration }>();
+  const summaries = createWorkspaceSummaries(client, OverviewAskEntry);
   const lifetime = new AbortController();
-  const PillPopover = pillPopover(client);
+  // Older hosts ignore the side-panel hint; Open wide escapes their capped popover.
+  const asksPopover: Extract<PluginButtonBehavior, { kind: "popover" }> & { presentation: "side-panel" } = {
+    kind: "popover",
+    presentation: "side-panel",
+    Content(props) {
+      if (props.context !== "agent") return null;
+      const openWide = () => {
+        props.close();
+        client.openPanel("asks", { workspaceId: props.workspaceId, agentId: props.agentId });
+      };
+      return <PillPopover {...props} onOpenWide={props.layout.compact ? undefined : openWide} />;
+    },
+  };
 
   const register = (agent: { id: string; workspaceId?: string | null }) => {
     if (lifetime.signal.aborted || !agent.workspaceId || pills.has(agent.id)) return;
     const { id: agentId, workspaceId } = agent;
-    pills.set(
-      agentId,
-      client.addComposerPill({
+    pills.set(agentId, {
+      workspaceId,
+      pill: client.addComposerPill({
         id: "asks",
         workspaceId,
         agentId,
-        button: { title: "Asks", icon: "Inbox", label: pillLabel([], agentId), behavior: { kind: "popover", Content: PillPopover } },
+        button: { title: "Asks", icon: "MessageCircleQuestionMark", ...pillFace([], agentId), behavior: asksPopover },
       }),
-    );
+    });
   };
   const drop = (agentId: string) => {
-    pills.get(agentId)?.remove();
+    pills.get(agentId)?.pill.remove();
     pills.delete(agentId);
   };
 
   const refreshCounts = async () => {
-    const { asks } = await client.rpc(listAsks, {});
-    for (const [agentId, pill] of pills) pill.update({ label: pillLabel(asks, agentId) });
+    // Closed asks too: a workspace that ever had an ask reports "Nothing waiting" rather than nothing.
+    const { asks } = await client.rpc(listAsks, { includeClosed: true });
+    for (const [agentId, { pill }] of pills) {
+      pill.update(pillFace(asks, agentId));
+    }
+    // Every workspace with asks, even one whose agents are gone, plus ones already reported, so a count drops to 0.
+    const summary = workspaceAsks(asks, snoozedWorkspaceIds());
+    const workspaceIds = new Set([...summary.keys(), ...summaries.workspaceIds()]);
+    for (const workspaceId of workspaceIds) summaries.set(workspaceId, summary.get(workspaceId));
   };
   const timer = setInterval(() => void refreshCounts().catch(() => undefined), POLL_MS * 2);
+  const stopListening = onAsksChanged(() => void refreshCounts().catch(() => undefined));
 
   void client.paseo.agents
     .list({ subscribe: {}, signal: lifetime.signal })
@@ -120,18 +228,29 @@ function contributePills(client: PluginClientContext): () => void {
   return () => {
     lifetime.abort();
     clearInterval(timer);
+    stopListening();
     for (const agentId of [...pills.keys()]) drop(agentId);
+    summaries.clear();
   };
 }
 
 export default function contribute(client: PluginClientContext) {
-  client.addWorkspacePanel({ id: "asks", title: "Asks", icon: "Inbox", context: "workspace", Component: WorkspacePanel });
+  openAgentViaScreen = (agentId) => client.openScreen({ screenId: "asks", params: { open: agentId } });
+  client.addWorkspacePanel({
+    id: "asks",
+    title: "Asks",
+    icon: "MessageCircleQuestionMark",
+    context: "workspace",
+    locations: ["workspace", "explorer"],
+    Component: WorkspacePanel,
+  });
   client.addScreen({ id: "asks", title: "Asks", Component: GlobalScreen });
+  client.addSettingsScreen({ id: "asks", title: "Asks", icon: "MessageCircleQuestionMark", Component: SettingsScreen });
   client.addSidebarHeaderItem({ id: "asks", title: "Asks", Component: SidebarItem });
   client.addCommandCenterItem({
     id: "open-asks",
     title: "Open asks for this workspace",
-    icon: "Inbox",
+    icon: "MessageCircleQuestionMark",
     context: "workspace",
     keywords: ["asks", "decisions", "inbox"],
     onSelect: ({ openPanel }) => openPanel("asks"),
@@ -139,10 +258,35 @@ export default function contribute(client: PluginClientContext) {
   client.addCommandCenterItem({
     id: "open-all-asks",
     title: "Open asks across workspaces",
-    icon: "Inbox",
+    icon: "MessageCircleQuestionMark",
     context: "global",
     keywords: ["asks", "decisions", "inbox"],
     onSelect: ({ openScreen }) => openScreen({ screenId: "asks" }),
   });
-  return contributePills(client);
+  // An asks tool call in the chat becomes the ask itself, so it can be read and answered in place.
+  client.addTimelineTransformer({
+    id: "ask-cards",
+    query: { itemType: "tool_call" },
+    transform: ({ item }) => {
+      const data = askCardFor(item);
+      return data && { items: [{ type: "plugin", ...ASK_CARD, data }] };
+    },
+  });
+  client.addTimelineRenderer({ ...ASK_CARD, schema: AskCardSchema, Component: TimelineCard });
+  // An [asks] message reads as what the human did; the agent still gets the instructions in its text.
+  client.addTimelineTransformer({
+    id: "asks-messages",
+    query: { itemType: "user_message" },
+    transform: ({ item }) => {
+      const data = parseAsksMessage(item.text);
+      return data && { items: [{ type: "plugin", ...ASKS_MESSAGE, data }] };
+    },
+  });
+  client.addTimelineRenderer({ ...ASKS_MESSAGE, schema: AsksMessageSchema, Component: TimelineMessage });
+  const stopPills = contributePills(client);
+  const stopSnoozed = observeSnoozedWorkspaces(client, "asks");
+  return () => {
+    stopPills();
+    stopSnoozed();
+  };
 }
