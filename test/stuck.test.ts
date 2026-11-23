@@ -65,17 +65,20 @@ describe("asks stuck in progress", () => {
     expect(sent[0]).not.toContain("If the PR still waits on the human after it");
   });
 
-  it("releases new actions automatically at turn end even when the agent passes status in_progress", async () => {
+  it("Given fresh actions with explicit in_progress, When the owner's turn ends, Then the deliberate hold stays", async () => {
+    // Given
     await prAsk();
+    // When
     const result = await service.callTool(AGENT, "ask_update", {
       id: "A1",
       status: "in_progress",
       actions: [{ label: "Authorize: add QA labels + merge", kind: "send", prompt: "Add the labels and merge" }],
     });
     expect(result.text).toMatch(/^A1 \[in_progress\]/);
-    expect(store.get(WS, "A1")?.autoStatus).toBe(true);
+    expect(store.get(WS, "A1")?.autoStatus).toBe(false);
     await new RunStatus(store, () => {}).turnEnded(AGENT);
-    expect(store.get(WS, "A1")?.status).toBe("open");
+    // Then
+    expect(store.get(WS, "A1")).toMatchObject({ status: "in_progress", autoStatus: false });
   });
 
   it("still lets the agent resolve or drop an ask while giving it actions", async () => {
@@ -126,8 +129,8 @@ describe("asks stuck in progress", () => {
     expect(store.get(WS, "A1")?.status).toBe("open");
   });
 
-  it("reopens a stale in-progress ask whose owner is not running, and leaves the rest", async () => {
-    await prAsk();
+  it("reopens a stale automatically held ask whose owner is not running, and leaves the rest", async () => {
+    await service.callTool(AGENT, "ask_create", { kind: "question", title: "Which region?" });
     const later = new Date(Date.parse(store.get(WS, "A1")!.updatedAt) + STALE_MS);
     const early = new Date(later.getTime() - 1000);
     expect(await service.reopenStale(async () => false, early)).toEqual([]);
@@ -137,10 +140,27 @@ describe("asks stuck in progress", () => {
     expect(store.get(WS, "A1")?.status).toBe("open");
   });
 
+  it.each(["explicit", "human-send"] as const)("Given a %s hold, When the idle ask is older than a day, Then it stays held", async (hold) => {
+    // Given
+    if (hold === "human-send") await prAsk();
+    else {
+      await service.callTool(AGENT, "ask_create", { kind: "question", title: "Which region?" });
+      await service.callTool(AGENT, "ask_update", { id: "A1", status: "in_progress" });
+    }
+    const before = store.get(WS, "A1")!;
+    const later = new Date(Date.parse(before.updatedAt) + STALE_MS * 2);
+    // When
+    const reopened = await service.reopenStale(async () => false, later);
+    // Then
+    expect(reopened).toEqual([]);
+    expect(store.get(WS, "A1")).toEqual(before);
+    expect(store.get(WS, "A1")).toMatchObject({ status: "in_progress", autoStatus: false });
+  });
+
   it.each(["dropped", "done", "owner", "updated"] as const)("Given a stale ask, When it is %s during owner lookup, Then reopening preserves the newer state", async (change) => {
     // Given
     vi.useFakeTimers({ toFake: ["Date"], now: new Date("2026-11-01T00:00:00.000Z") });
-    await prAsk();
+    await service.callTool(AGENT, "ask_create", { kind: "question", title: "Which region?" });
     const observed = store.get(WS, "A1")!;
     const later = new Date(Date.parse(observed.updatedAt) + STALE_MS);
     let changed = observed;
@@ -161,7 +181,7 @@ describe("asks stuck in progress", () => {
 
   it("Given stale asks share an owner, When lookup fails, Then neither reopens and the failure is cached for the scan", async () => {
     // Given
-    await prAsk();
+    await service.callTool(AGENT, "ask_create", { kind: "question", title: "Which zone?" });
     await service.callTool(AGENT, "ask_create", { kind: "question", title: "Which region?" });
     const later = new Date(Date.now() + STALE_MS);
     const lookup = vi.fn(async () => { throw new Error("Unavailable"); });

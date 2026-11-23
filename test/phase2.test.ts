@@ -167,17 +167,31 @@ describe("phase 2", () => {
     expect(sent).toEqual(["[asks] A1 (Implement the spec) PR #30 checks passing."]);
   });
 
-  it("stops polling a PR ask once its PR is merged", async () => {
+  it("Given a subscribed ask merged with pending checks, When checks finish later, Then polling updates it and tells the owner", async () => {
+    // Given
     await prAsk(true);
     const fetched: string[] = [];
+    let next = pr();
     const watcher = new PrWatcher(store, service, async (url) => {
       fetched.push(url);
-      return pr({ state: "MERGED" });
+      return next;
     });
     await watcher.refresh();
+    next = pr({ state: "MERGED" });
     await watcher.refresh();
-    expect(fetched).toEqual(["https://github.com/o/r/pull/30"]);
-    expect(store.get(WS, "A1")?.pr?.state).toBe("MERGED");
+    await outbox.flush();
+    expect(store.get(WS, "A1")?.pr).toMatchObject({ state: "MERGED", checks: "pending" });
+    // When
+    next = pr({ state: "MERGED", checks: "passing" });
+    await watcher.refresh();
+    await outbox.flush();
+    // Then
+    expect(fetched).toEqual(Array(3).fill("https://github.com/o/r/pull/30"));
+    expect(store.get(WS, "A1")?.pr).toMatchObject({ state: "MERGED", checks: "passing" });
+    expect(sent).toEqual([
+      "[asks] A1 (Merge PR #30) PR #30 merged.",
+      "[asks] A1 (Merge PR #30) PR #30 checks passing.",
+    ]);
   });
 
   it("keeps an orphaned ask's open PR fresh for the human without telling anyone", async () => {

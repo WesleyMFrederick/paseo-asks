@@ -5,7 +5,7 @@ import type { Ask } from "../shared/asks";
  * working on it or someone other than the human holds it. These rules catch the asks where neither holds.
  */
 
-/** An in-progress ask the owner has not touched for this long while not running is waiting on the human, or on nobody. */
+/** Automatic holds may recover after this long while the owner is not running; deliberate holds never expire. */
 export const STALE_MS = 24 * 60 * 60 * 1000;
 
 /** Pending checks on a subscribed PR: the watcher wakes the owner when they finish, so nobody needs reminding. */
@@ -19,7 +19,7 @@ export function needsReminder(ask: Ask): boolean {
   return !ask.remindedAt || ask.remindedAt < ask.updatedAt;
 }
 
-/** In progress, owner not running, untouched for STALE_MS. */
+/** Automatically in progress, owner not running, untouched for STALE_MS. */
 export function isStale(ask: Ask, now: Date, ownerRunning: boolean): boolean {
-  return ask.status === "in_progress" && !ownerRunning && now.getTime() - Date.parse(ask.updatedAt) >= STALE_MS;
+  return ask.status === "in_progress" && Boolean(ask.autoStatus) && !ownerRunning && now.getTime() - Date.parse(ask.updatedAt) >= STALE_MS;
 }

@@ -257,10 +257,23 @@ describe("asks", () => {
     await service.callTool(AGENT, "ask_create", decision);
     const relabelled = await service.callTool(AGENT, "ask_update", {
       id: "A1",
+      title: "Answer the 4 open questions",
       actions: [{ label: "Accept all recommendations", kind: "resolve" }],
     });
     expect(relabelled.isError).toBe(true);
     expect(store.get(WS, "A1")?.actions.map((action) => action.label)).toEqual(["a: leave as is", "b: squash-only"]);
+  });
+
+  it.each(["Approve as proposed", "Accept all recommendations", "I'll answer in chat", "Answer differently", "Odpowiadam w czacie"])("Given a single question with label %s, When created and updated, Then the label alone does not reject it", async (label) => {
+    // Given
+    const actions = [{ label, kind: "send" }];
+    // When
+    const created = await service.callTool(AGENT, "ask_create", { kind: "review", title: "Approve the rollout?", actions });
+    const updated = await service.callTool(AGENT, "ask_update", { id: "A1", title: "Approve the production rollout?", actions });
+    // Then
+    expect(created.isError).toBeUndefined();
+    expect(updated.isError).toBeUndefined();
+    expect(new AskStore(dir).get(WS, "A1")).toMatchObject({ title: "Approve the production rollout?", actions: [{ label }] });
   });
 
   it("preserves Markdown source through creation, persistence and the response schema", async () => {
@@ -411,7 +424,7 @@ describe("asks", () => {
     expect(unwatched).not.toContain("keep the ask in progress");
   });
 
-  it("new options on an in-progress ask hand it back to the human", async () => {
+  it("new options release an in-progress ask unless the owner explicitly keeps it held", async () => {
     await service.callTool(AGENT, "ask_create", {
       kind: "pr",
       title: "PR #30 ready",
@@ -434,10 +447,10 @@ describe("asks", () => {
       actions: [{ label: "Retry", kind: "send" }],
       status: "in_progress",
     });
-    // Fresh options release the explicit hold when the owner's turn ends.
-    expect(store.get(WS, "A1")).toMatchObject({ status: "in_progress", autoStatus: true });
+    // Explicit in_progress wins over fresh options and stays held across turns.
+    expect(store.get(WS, "A1")).toMatchObject({ status: "in_progress", autoStatus: false });
     await new RunStatus(store, () => {}).turnEnded(AGENT);
-    expect(store.get(WS, "A1")!.status).toBe("open");
+    expect(store.get(WS, "A1")).toMatchObject({ status: "in_progress", autoStatus: false });
   });
 
   it("new options don't reopen an ask whose click the agent hasn't received yet", async () => {
@@ -461,21 +474,27 @@ describe("asks", () => {
     expect(courier.sent).toHaveLength(1);
   });
 
-  it("moves an open ask to in progress on a reply, and back to open on new options", async () => {
+  it.each([
+    { status: "open", autoStatus: false },
+    { status: "open", autoStatus: undefined },
+    { status: "in_progress", autoStatus: true },
+    { status: "in_progress", autoStatus: false },
+    { status: "in_progress", autoStatus: undefined },
+  ] as const)("Given status $status and automatic=$autoStatus, When the human replies without an action, Then both stay unchanged", async (state) => {
+    // Given
     await service.callTool(AGENT, "ask_create", decision);
-    await new RunStatus(store, () => {}).turnEnded(AGENT);
-    await service.act({ workspaceId: WS, id: "A1", verb: "reply", note: "Why not both?" });
-    expect(store.get(WS, "A1")).toMatchObject({ status: "in_progress", outcome: { note: "Why not both?", by: "human" } });
+    await store.update(WS, "A1", state);
+    // When
+    const result = await service.act({ workspaceId: WS, id: "A1", verb: "reply", note: "Why not both?" });
     await outbox.flush();
+    // Then
+    expect(result.ask.status).toBe(state.status);
+    expect(result.ask.autoStatus).toBe(state.autoStatus);
+    const persisted = new AskStore(dir).get(WS, "A1")!;
+    expect(persisted.status).toBe(state.status);
+    expect(persisted.autoStatus).toBe(state.autoStatus);
     expect(courier.sent).toHaveLength(1);
-
-    await service.callTool(AGENT, "ask_update", {
-      id: "A1",
-      actions: [{ label: "Both", kind: "resolve" }, { label: "Squash only", kind: "resolve" }],
-    });
-    expect(store.get(WS, "A1")).toMatchObject({ status: "in_progress", autoStatus: true });
-    await new RunStatus(store, () => {}).turnEnded(AGENT);
-    expect(store.get(WS, "A1")!.status).toBe("open");
+    expect(courier.sent[0]?.text).toContain('reply from the human: "Why not both?"');
   });
 
   it.each(["done", "dropped"] as const)("Given a %s ask, When the human replies, Then nothing changes or reaches the owner", async (status) => {

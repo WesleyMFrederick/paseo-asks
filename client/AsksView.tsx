@@ -27,7 +27,7 @@ import {
 } from "../shared/asks";
 import { displaySettings } from "../shared/settings";
 import type { AskCard as AskCardData } from "../shared/timeline";
-import { Markdown } from "@getpaseo/plugin/client/ui";
+import { Markdown } from "./markdown";
 import { OpenPrContext } from "./inbox";
 import { openLink } from "./open-link";
 import { askQueue, type QueueFilter } from "./queue";
@@ -93,7 +93,7 @@ function MainAsks({ theme, compact, openAgent }: ViewProps) {
   const asks = useAsks();
   const snoozed = useSnoozedWorkspaceIds();
   const [filter, setFilter] = useState<QueueFilter>("needs_you");
-  const [expanded, setExpanded] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
   const queue = useMemo(() => askQueue(asks.data?.asks ?? [], snoozed), [asks.data, snoozed]);
   const selected = FILTERS.find((item) => item.id === filter)!;
 
@@ -113,7 +113,7 @@ function MainAsks({ theme, compact, openAgent }: ViewProps) {
               accessibilityState={{ selected: filter === item.id }}
               onPress={() => {
                 setFilter(item.id);
-                setExpanded(null);
+                setExpanded(new Set());
               }}
               style={({ pressed }) => [
                 styles.filter,
@@ -152,8 +152,13 @@ function MainAsks({ theme, compact, openAgent }: ViewProps) {
                   snoozed={snoozed.has(ask.workspaceId)}
                   styles={styles}
                   theme={theme}
-                  expanded={expanded === key}
-                  onToggle={() => setExpanded(expanded === key ? null : key)}
+                  expanded={expanded.has(key)}
+                  onToggle={() => setExpanded((current) => {
+                    const next = new Set(current);
+                    if (next.has(key)) next.delete(key);
+                    else next.add(key);
+                    return next;
+                  })}
                   openAgent={openAgent}
                 />
               );
@@ -228,7 +233,7 @@ function QueueRow(props: {
 function WorkspaceAsks({ theme, compact, workspaceId, openAgent }: ViewProps) {
   const styles = useMemo(() => makeStyles(theme, compact), [theme, compact]);
   const asks = useAsks(workspaceId);
-  const [expanded, setExpanded] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
 
   if (asks.isPending) return <Message styles={styles} text="Loading asks…" />;
   if (asks.isError)
@@ -263,8 +268,13 @@ function WorkspaceAsks({ theme, compact, workspaceId, openAgent }: ViewProps) {
                   ask={ask}
                   styles={styles}
                   theme={theme}
-                  expanded={expanded === key}
-                  onToggle={() => setExpanded(expanded === key ? null : key)}
+                  expanded={expanded.has(key)}
+                  onToggle={() => setExpanded((current) => {
+                    const next = new Set(current);
+                    if (next.has(key)) next.delete(key);
+                    else next.add(key);
+                    return next;
+                  })}
                   openAgent={openAgent}
                 />
               );
@@ -507,7 +517,7 @@ function SnapshotRow(
       {expanded && (
         <View style={styles.detail}>
           {detail ? <Text style={styles.muted}>{detail}</Text> : null}
-          {snapshot.body?.trim() ? <Markdown>{snapshot.body}</Markdown> : null}
+          {snapshot.body?.trim() ? <Markdown theme={theme}>{snapshot.body}</Markdown> : null}
           {snapshot.actions?.length ? (
             <View style={styles.chips}>
               {snapshot.actions.map((action, index) => (
@@ -675,17 +685,16 @@ function AskDetail({
     ...(closed
       ? []
       : [{ id: "done", label: "Mark done", icon: "CircleCheck", onSelect: () => mutation.mutate({ verb: "done" }) }]),
-    // An ask you already answered has nothing left to settle: only its live discussion reopens.
-    ...(ask.orphaned || !(ask.status === "open" || (ask.status === "in_progress" && ask.autoStatus === true) || ask.discussionAgentId)
-      ? []
-      : [
+    ...(!ask.orphaned
+      ? [
           {
             id: "discuss",
             label: ask.discussionAgentId ? "Open discussion" : "Discuss",
             icon: "MessagesSquare",
             onSelect: () => discussion.mutate(),
           },
-        ]),
+        ]
+      : []),
     ...(openAgent && ask.ownerAgentId !== viewingAgentId
       ? [{ id: "chat", label: "Show in chat", icon: "MessageSquare", onSelect: () => showInChat(openAgent) }]
       : []),
@@ -718,7 +727,7 @@ function AskDetail({
           <Text style={styles.link}>{bodyOpened ? "Hide details" : "Details"}</Text>
         </Pressable>
       ) : null}
-      {bodyShown && ask.body?.trim() ? <Markdown>{ask.body}</Markdown> : null}
+      {bodyShown && ask.body?.trim() ? <Markdown theme={theme}>{ask.body}</Markdown> : null}
       {ask.links.map((link) => {
         const pr = openPr && prPreviewOf(link.url);
         return pr ? (
@@ -756,7 +765,7 @@ function AskDetail({
                 styles={styles}
                 primary={action.recommended}
                 disabled={busy}
-                label={`${action.label}${action.kind === "open" ? " ↗" : ""}`}
+                label={`${action.label}${action.recommended ? " ★" : ""}${action.kind === "open" ? " ↗" : ""}`}
                 onPress={() => press(action)}
               />
             ))}

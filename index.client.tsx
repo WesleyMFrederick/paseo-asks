@@ -18,7 +18,7 @@ import { inboxReview, OpenPrContext } from "./client/inbox";
 import { AgentAsks, AskCard, AsksView, POLL_MS, useAsks, WorkspaceAskEntry } from "./client/AsksView";
 import { SettingsScreen } from "./client/SettingsScreen";
 import { observeSnoozedWorkspaces, snoozedWorkspaceIds, useSnoozedWorkspaceIds } from "./client/snoozed";
-import { listAsks, pillLabel, readerAsks, waitingCount, workspaceAsks, type Ask } from "./shared/asks";
+import { listAsks, pillLabel, waitingCount, workspaceAsks, type Ask } from "./shared/asks";
 import { createWorkspaceSummaries, type SummaryEntryProps } from "./client/summary";
 import { ASKS_MESSAGE, AsksMessageSchema, parseAsksMessage, type AsksMessage as AsksMessageData } from "./shared/messages";
 import { ASK_CARD, AskCardSchema, askCardFor, type AskCard as AskCardData } from "./shared/timeline";
@@ -148,11 +148,11 @@ function PillPopover(props: PluginButtonContentProps & { onOpenWide?: () => void
 function pillFace(asks: readonly Ask[], agentId: string): { label: string; visible: boolean } {
   return {
     label: pillLabel(asks, agentId),
-    visible: readerAsks(asks, agentId).some((ask) => ask.status === "open" || ask.status === "in_progress"),
+    visible: true,
   };
 }
 
-/** A composer pill per agent with own or relayed asks; pressing it shows them and a Refresh. */
+/** A composer pill per agent, even with no asks, so Refresh always stays reachable. */
 function contributePills(client: PluginClientContext): () => void {
   const pills = new Map<string, { workspaceId: string; pill: PluginButtonRegistration }>();
   const summaries = createWorkspaceSummaries(client, OverviewAskEntry);

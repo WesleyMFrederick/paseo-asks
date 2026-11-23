@@ -35,7 +35,7 @@ ${actOnReviewChanges ? ADDRESS_REVIEW : HOLD_REVIEW}
   - Request or re-request a review only when the human clicks. Doing it does not finish the ask: keep it in progress, not resolved, so its subscription tells you about the review. Once the review is approved and checks pass, read the review and its comments as above, then ask_update the same ask to a "Merge" send action.
 - The human may talk an ask through in a side chat; its outcome reaches you as an [asks] message like any other answer.
 - Answers arrive as messages starting with [asks]. Act on them. After finishing work a send action gave you, call ask_resolve (a requested PR review is not finished until it is approved; see PRs).
-- The plugin sets in_progress while you run and open when you are idle. Set in_progress explicitly only for work that continues across turns. A human send action also holds the ask in progress until you finish it or offer fresh actions with ask_update. Fresh actions hand it back to the human when your turn ends; never point them to a button on a held in-progress ask. In chat, use these names: "waiting on you" for open, "in progress" for in_progress.
+- The plugin sets in_progress while you run and open when you are idle. Set in_progress explicitly only for work that continues across turns. A human send action also holds the ask in progress until you finish it or offer fresh actions with ask_update. Fresh actions hand it back to the human when your turn ends unless you explicitly set in_progress in that update; never point them to a button on a held in-progress ask. In chat, use these names: "waiting on you" for open, "in progress" for in_progress.
 - Keep asks true: ask_update when facts change, ask_resolve or status "dropped" when the human is no longer needed. Check ask_list before creating a duplicate.
 - Your own to-do list stays in your task tool. Asks are only for things whose next move is the human's.`;
 
@@ -218,21 +218,18 @@ export class AsksService {
           const ask = this.find(workspaceId, agentId, id);
           this.checkStillWaiting(ask, agentId);
           checkActions(patch.actions ?? []);
-          if (patch.title !== undefined || patch.actions) {
-            checkNotBundled(patch.title ?? ask.title, (patch.actions ?? ask.actions).map((action) => action.label));
-          }
-          // Fresh options release a held ask back to the human (at turn end for its running owner), even when the
-          // agent passes in_progress. Not while the human's answer still waits in the outbox: the agent is editing
-          // options it doesn't know were clicked.
+          if (patch.title !== undefined) checkNotBundled(patch.title);
+          // Fresh options without an explicit status release a held ask back to the human at turn end.
+          // Not while the human's answer still waits in the outbox: the agent doesn't know what was clicked.
           const unseenAnswer = this.outbox.pending(ask.ownerAgentId).some((entry) => entry.askId === ask.id);
-          if (patch.actions?.length && (patch.status ?? ask.status) === "in_progress" && !unseenAnswer) {
+          if (patch.actions?.length && patch.status === undefined && ask.status === "in_progress" && !unseenAnswer) {
             patch.status = "open";
           }
           // Reopened by its owner: the old discussion was about what it asked then. Discuss starts a new one.
           const reopened = !OPEN_STATUSES.includes(ask.status) && patch.status !== undefined && OPEN_STATUSES.includes(patch.status);
           const unlink = reopened && ask.discussionAgentId ? { discussionAgentId: undefined, discussionWorkspaceId: undefined } : {};
-          // The owner is mid-turn. An open request (including fresh options) is automatic; explicit in_progress
-          // without fresh options holds across turns. Other updates preserve a human send or explicit hold.
+          // The owner is mid-turn. An open request is automatic; explicit in_progress holds across turns,
+          // even with fresh options. Other updates preserve a human send or explicit hold.
           const applied = agentId === ask.ownerAgentId && (patch.status === "open" || patch.status === "in_progress")
             ? { ...patch, status: "in_progress" as const, autoStatus: patch.status === "open" }
             : patch;
@@ -333,13 +330,8 @@ export class AsksService {
         break;
       case "reply":
         if (!note) throw new Error("A reply needs text");
-        // Answered, so the next move is the agent's: leave "waiting on you" now rather than when the agent gets to it.
-        // New options from the agent release the hold. Automatic in-progress asks have not been answered yet either.
-        next = await this.store.update(
-          ask.workspaceId,
-          ask.id,
-          ask.status === "open" || ask.autoStatus ? { status: "in_progress", autoStatus: false, outcome: { note, by: "human", at } } : {},
-        );
+        // A reply adds context without choosing an action or changing who holds the ask.
+        next = await this.store.update(ask.workspaceId, ask.id, { outcome: { note, by: "human", at } });
         message = `${head} reply from the human: "${note}". Update or resolve ${ask.id} accordingly.`;
         break;
     }
@@ -402,12 +394,12 @@ export class AsksService {
     return Promise.all(held.map((ask) => this.store.update(ask.workspaceId, ask.id, { status: "open", autoStatus: false })));
   }
 
-  /** Reopen in-progress asks whose owner is not running and has left them untouched for a day. */
+  /** Recover stale automatic holds only; a human send or explicit hold has no expiry. */
   async reopenStale(isRunning: (agentId: string) => Promise<boolean>, now = new Date()): Promise<Ask[]> {
     const running = new Map<string, boolean>();
     const reopened: Ask[] = [];
     for (const ask of this.store.list()) {
-      if (ask.status !== "in_progress") continue;
+      if (ask.status !== "in_progress" || !ask.autoStatus) continue;
       if (!running.has(ask.ownerAgentId)) running.set(ask.ownerAgentId, await isRunning(ask.ownerAgentId).catch(() => true));
       if (isStale(ask, now, running.get(ask.ownerAgentId)!)) {
         const updated = await this.store.flipStatus(ask, "open", false);
@@ -538,7 +530,7 @@ export class AsksService {
 
   private async create(workspaceId: string, agentId: string, input: z.output<typeof CreateInput>, lastCall: string): Promise<Ask> {
     checkActions(input.actions);
-    checkNotBundled(input.title, input.actions.map((action) => action.label));
+    checkNotBundled(input.title);
     if (input.kind === "decision" && input.actions.filter((action) => action.kind === "resolve").length < 2) {
       throw new Error('A decision needs at least two "resolve" actions, one per option');
     }

@@ -17,7 +17,7 @@ The inventory is `git log --reverse upstream/main..9061043`, including merge com
 | `a0f94dc` refuse closed acts; report delivery | adapted | Preserve refusal of every action on a closed ask, delivery feedback and action logging with the upstream card interfaces; closed cards hide answer/reply controls and answers still wait for idle. |
 | `da2d6cd` full composer ask | dropped (covered by upstream [#69](https://github.com/fullstackhouse/paseo-asks/pull/69), [#71](https://github.com/fullstackhouse/paseo-asks/pull/71)) | Use upstream live chat cards and simplified full-content cards instead of the older composer-only rendering. |
 | `79445ad` drop/full-view results | kept | Retain the historical verification record. |
-| `2e6274d` named toast; wrapped code | adapted | Preserve action-specific delivery feedback; host Markdown replaces the plugin renderer and its wrapping patch. |
+| `2e6274d` named toast; wrapped code | adapted | Preserve action-specific delivery feedback and narrow fenced-code wrapping alongside host Markdown. |
 | `7649502` browser-check results | kept | Retain the historical verification record. |
 | `eb936cc` browser evidence | kept | Retain the historical verification record. |
 | `69b8341` preview toast | adapted | Keep preview delivery feedback with the current upstream mock host interface. |
@@ -31,7 +31,7 @@ The inventory is `git log --reverse upstream/main..9061043`, including merge com
 | `a597956` post-census UI check | kept | Retain the historical verification record. |
 | `69f41d1` post-census check 3 | kept | Retain the historical verification record. |
 | `95a6028` wide/phone sign-off | kept | Retain the historical user sign-off without treating it as fresh catch-up verification. |
-| `03dba06` recorded-card nudge suppression | adapted | Keep decision-id/title matching, scoped to relevant asks, alongside upstream [#68](https://github.com/fullstackhouse/paseo-asks/pull/68) workspace-aware ids and asynchronous classifier. |
+| `03dba06` recorded-card nudge suppression | adapted | Keep decision-id/title matching and workspace-aware ids from upstream [#68](https://github.com/fullstackhouse/paseo-asks/pull/68); stock-host compatibility retains the question-mark heuristic instead of the unsupported helper classifier. |
 | `3c5338b` merge main into UI branch | kept | Preserve merge ancestry; its constituent behavior is classified separately. |
 | `4df7b7a` automatic run-state status | kept | Restore automatic running/idle flips and count automatic holds as scheduled-run attention even before the turn-end flip: upstream [#76](https://github.com/fullstackhouse/paseo-asks/pull/76) cannot replace the harness contract. |
 | `61604b2` merge automatic status | kept | Preserve ancestry and the automatic-status behavior the harness relies on. |
@@ -48,7 +48,7 @@ Summary after independent review: **29 local-only commits: 21 kept, 1 dropped, 7
 
 ## Resulting behavior
 
-Upstream provides native question and chat cards, shared Markdown, discussion workspaces, Show in chat, snoozed counts, workspace summaries, PR review/deployment handling and classifier nudges. Local behavior retains automatic run-state status, relay batches, newest-relay expansion, cross-workspace context, delivery feedback/logging, atomic sends, PR cache invalidation and closed-owner administration. Answers wait until the owner is idle, including on steering-capable providers.
+Upstream provides native question and chat cards, host Markdown, discussion workspaces, Show in chat, snoozed counts, workspace summaries and PR review/deployment handling. Local behavior retains automatic run-state status, relay batches, newest-relay expansion, cross-workspace context, delivery feedback/logging, atomic sends, PR cache invalidation, closed-owner administration and question-mark nudges. Answers wait until the owner is idle, including on steering-capable providers. Host-specific additions remain conditional on the installed host's capabilities.
 
 Independent review rejected the initial decision to replace automatic status with upstream's human-wait lifecycle: these mechanisms do not have the same observable behavior. The harness requires automatic flips and available unsent buttons during an automatic in-progress turn. The automatic status implementation, hooks, flag, lock-protected compare-and-set and tests are restored, and the migration stripping the flag is removed before any live deployment.
 
@@ -143,6 +143,31 @@ Compatibility-fix verification:
 - `bun run typecheck` exited 0.
 - The full suite through the machine-wide queue exited 0: `Test Files 22 passed (22)`, `Tests 302 passed (302)`, `Duration 9.71s`.
 - No client source changed, so no additional preview build was needed. No lint script is configured in this plugin.
+
+## Preserve working pre-catch-up behavior
+
+The user requires the candidate to retain every working behavior from `9061043`, rather than adopting upstream changes merely because they are newer. The restoration keeps the empty composer pill and its Refresh button, explicit in-progress holds even when new actions are supplied, indefinite deliberate and human-send holds, and subscribed check updates after a PR merges. A single decision is not rejected merely because its button says “Approve as proposed”. A text reply leaves status unchanged, Discuss remains available after sending, multiple list rows can stay expanded, and recommended choices retain their star.
+
+The additive history-fetch fix, scoped ask-ID suppression and inline chat cards remain. Writable discussion workspaces are retained with the existing read-only fallback: workspace creation failure selects the owner's advertised read-only mode in the original workspace; when no such mode exists, discussion creation fails rather than starting a writable fallback. `test/discuss.test.ts` covers both fallback selection and refusal without a read-only mode.
+
+| Restored behavior | Regression coverage |
+|---|---|
+| Empty-pill Refresh | `test/client-parity.test.tsx` opens the actual contributed pill after count updates and presses Refresh. |
+| Explicit hold with fresh actions | `test/stuck.test.ts` updates actions and explicitly holds the ask, then runs the real turn-end handler. |
+| Deliberate and human-send holds do not expire | `test/stuck.test.ts` advances both kinds beyond a day and checks that the stale sweep preserves them. |
+| Checks still update after merge | `test/phase2.test.ts` polls pending checks, a merge, then passing checks and asserts both owner messages. |
+| Single-question approval labels | `test/asks.test.ts` creates and updates single questions with generic approval/chat labels; `test/bundle.test.ts` retains explicit multi-question title rejection. |
+| Reply preserves status | `test/asks.test.ts` covers open, automatic, explicit and legacy-marker states. |
+| Discuss after sending | `test/client-parity.test.tsx` sends an action, then presses Discuss on the in-progress ask. |
+| Multiple expanded rows and recommendation stars | `test/client-parity.test.tsx` opens two rows in workspace and global views and checks both bodies, the star and highlighting. |
+
+Installed-host inspection also confirmed that host Markdown scrolls fenced code horizontally, unlike the old plugin's wrapping text. The client now wraps backtick and tilde fences in selectable native text, including space- and tab-indented fences recognized by the old parser, while retaining host Markdown for prose. Client tests cover the wrapping styles and integration into ask bodies; they use mocked host primitives and hooks, not a browser layout engine. Blockquote-contained fences retain host rendering, as the old parser treated quoted blocks separately too.
+
+These changes apply only to the catch-up checkout. They do not activate the candidate, reload the daemon or change the live checkout.
+
+Restoration typecheck completed successfully through the machine-wide queue: `bun run typecheck` ran both TypeScript configurations. An earlier direct attempt timed out at 120 seconds without diagnostics during heavy machine load; the completed check used a finite 1800-second deadline. Verification runs serially through the queue.
+
+Final restoration verification ran serially in one queued command, `bun run typecheck && bun run test`, with a finite 1800-second deadline. Both TypeScript configurations passed; the full suite passed **23 files, 326 tests**, in 3.33 seconds. The first suite attempt exposed a test-host mock omission: Vitest requires the missing optional Menu export to be represented explicitly as undefined. Correcting that mock let the real inline fallback execute; no behavior assertion was removed. The final run also covers indented fences accepted by the old parser. No live activation or browser-layout verification was performed.
 
 ## Activate or roll back
 
