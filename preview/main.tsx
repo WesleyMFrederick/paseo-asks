@@ -126,6 +126,26 @@ createRoot(document.getElementById("root")!).render(
         />
       </View>
     </Frame>
+    <Frame id="closed-cards" title="Closed ask cards · done and dropped" width={390} height={720}>
+      <View style={{ padding: 16, gap: 12, backgroundColor: theme.colors.surface0, flex: 1 }}>
+        <Text style={{ color: theme.colors.foregroundMuted, lineHeight: 20 }}>
+          Expand each card: its link remains, but answer buttons and the reply field are hidden.
+        </Text>
+        {asks.filter((ask) => ask.workspaceId === "api" && (ask.id === "A10" || ask.id === "A11")).map((ask) => (
+          <AskCard
+            key={ask.id}
+            theme={theme}
+            compact
+            agentId="main"
+            askId={ask.id}
+            verb="create"
+            call={callKey("create", { title: ask.title, kind: ask.kind })}
+            snapshot={ask}
+            changed={[]}
+          />
+        ))}
+      </View>
+    </Frame>
     </OpenPrContext.Provider>
   </QueryClientProvider>,
 );
