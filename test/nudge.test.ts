@@ -100,9 +100,14 @@ describe("refresh", () => {
     return { sent, outbox, service: new AsksService(new AskStore(dir), outbox, async () => "wks_1") };
   };
 
-  it("sends now to an idle agent", async () => {
+  it("Given an idle agent, When Refresh is pressed, Then it receives a prompt covering scope pill", async () => {
+    // Given
     const { sent, service } = setup("idle");
+    // When
     expect(await service.refresh("agent")).toEqual({ sent: true });
+    // Then
+    expect(REFRESH).toContain("ask_list with scope pill");
+    expect(REFRESH).toContain("do not edit");
     expect(sent).toEqual([REFRESH]);
   });
 

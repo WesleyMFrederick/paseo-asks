@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { ACTION_KINDS, ASK_KINDS, ASK_STATUSES, OPEN_STATUSES, type Ask, type CloseInputSchema, type ReassignInputSchema, type RelayInputSchema } from "../shared/asks";
+import { ACTION_KINDS, ASK_KINDS, ASK_STATUSES, OPEN_STATUSES, readerAsks, type Ask, type CloseInputSchema, type ReassignInputSchema, type RelayInputSchema } from "../shared/asks";
 import { REFRESH } from "./nudge";
 import type { Delivery as OutboxDelivery, Outbox } from "./outbox";
 import type { FlipLogEntry } from "./run-status";
@@ -46,7 +46,7 @@ const UpdateInput = z.object({
 const ResolveInput = z.object({ id: z.string(), actionId: z.string().optional(), note: z.string().optional() });
 const ListInput = z.object({
   status: z.enum(["open", "all"]).default("open"),
-  scope: z.enum(["workspace", "mine"]).default("workspace"),
+  scope: z.enum(["workspace", "mine", "pill"]).default("workspace").describe("workspace: all asks in your workspace; mine: only yours in this workspace; pill: the asks your composer pill shows: yours plus those relayed to you from any workspace"),
 });
 
 export const TOOLS = [
@@ -68,7 +68,7 @@ export const TOOLS = [
   },
   {
     name: "ask_list",
-    description: "List asks in your workspace (or only yours). Defaults to open ones.",
+    description: "List asks. workspace (default): all in your workspace; mine: only yours in this workspace; pill: the asks your composer pill shows: yours plus those relayed to you from any workspace. Defaults to open ones. Pill results name the owner and workspace of asks you do not own.",
     inputSchema: z.toJSONSchema(ListInput, { io: "input" }),
   },
 ];
@@ -205,11 +205,11 @@ export class AsksService {
         }
         case "ask_list": {
           const { status, scope } = ListInput.parse(args);
-          const asks = this.store
-            .list(workspaceId)
-            .filter((ask) => status === "all" || OPEN_STATUSES.includes(ask.status))
-            .filter((ask) => scope === "workspace" || ask.ownerAgentId === agentId);
-          return { text: asks.length ? asks.map(summary).join("\n") : "No asks." };
+          const visible = scope === "pill"
+            ? readerAsks(this.store.list(), agentId)
+            : this.store.list(workspaceId).filter((ask) => scope === "workspace" || ask.ownerAgentId === agentId);
+          const asks = visible.filter((ask) => status === "all" || OPEN_STATUSES.includes(ask.status));
+          return { text: asks.length ? asks.map((ask) => summary(ask, scope === "pill" ? agentId : undefined)).join("\n") : "No asks." };
         }
         default:
           throw new Error(`Unknown tool ${name}`);
@@ -409,8 +409,11 @@ function checkActions(actions: z.output<typeof ActionInput>[]): void {
   if (actions.filter((action) => action.recommended).length > 1) throw new Error("Recommend at most one action");
 }
 
-function summary(ask: Ask): string {
-  return `${ask.id} [${ask.status}] ${ask.kind}: ${ask.title}`;
+function summary(ask: Ask, readerAgentId?: string): string {
+  const owner = readerAgentId && ask.ownerAgentId !== readerAgentId
+    ? ` (not yours; owner: ${ask.ownerAgentId}; workspace: ${ask.workspaceId})`
+    : "";
+  return `${ask.id} [${ask.status}] ${ask.kind}: ${ask.title}${owner}`;
 }
 
 function render(ask: Ask): ToolResult {

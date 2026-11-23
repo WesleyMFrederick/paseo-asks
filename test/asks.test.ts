@@ -180,6 +180,61 @@ describe("asks", () => {
     expect((await service.callTool(AGENT, "ask_list", { status: "all" })).text.split("\n")).toHaveLength(2);
   });
 
+  describe("ask_list scopes", () => {
+    const OTHER_WS = "wks_2";
+    const OTHER_AGENT = "agent-2";
+
+    beforeEach(async () => {
+      const input = { kind: "question" as const, title: "Unrelated", actions: [], links: [] };
+      await service.callTool(AGENT, "ask_create", { kind: "question", title: "Own ask" });
+      for (let index = 2; index <= 9; index++) {
+        await store.create({ ...input, workspaceId: WS, ownerAgentId: OTHER_AGENT, status: index === 9 ? "open" : "done" });
+      }
+      for (let index = 1; index <= 7; index++) {
+        await store.create({ ...input, workspaceId: OTHER_WS, ownerAgentId: OTHER_AGENT, title: "Relayed ask", status: index === 7 ? "open" : "done" });
+      }
+      await service.relay({ readerAgentId: AGENT, asks: [{ workspaceId: OTHER_WS, id: "A7" }] });
+    });
+
+    it("Given own A1 in W1, relayed A7 in W2 and unrelated A9 in W1, When listing scope pill, Then only A1 and A7 appear with A7's owner and workspace", async () => {
+      // Given: the caller owns A1 and reads A7 from another workspace.
+      // When
+      const result = await service.callTool(AGENT, "ask_list", { scope: "pill" });
+      // Then
+      expect(result.isError).toBeUndefined();
+      expect(result.text.split("\n")).toEqual([
+        "A1 [in_progress] question: Own ask",
+        "A7 [open] question: Relayed ask (not yours; owner: agent-2; workspace: wks_2)",
+      ]);
+    });
+
+    it.each([undefined, "workspace", "mine"] as const)("Given own and other agents' asks across workspaces, When listing scope %s, Then existing workspace and ownership filters are unchanged", async (scope) => {
+      // Given: A9 belongs to another agent in this workspace; A7 is relayed from another.
+      // When
+      const result = await service.callTool(AGENT, "ask_list", scope ? { scope } : {});
+      // Then
+      expect(result.isError).toBeUndefined();
+      expect(result.text.split("\n")).toEqual(scope === "mine"
+        ? ["A1 [in_progress] question: Own ask"]
+        : ["A1 [in_progress] question: Own ask", "A9 [open] question: Unrelated"]);
+    });
+
+    it("Given closed own and relayed asks, When listing scope pill, Then the status filter excludes them unless all is requested", async () => {
+      // Given
+      await store.update(WS, "A1", { status: "done" });
+      await store.update(OTHER_WS, "A7", { status: "dropped" });
+      // When
+      const open = await service.callTool(AGENT, "ask_list", { scope: "pill" });
+      const all = await service.callTool(AGENT, "ask_list", { scope: "pill", status: "all" });
+      // Then
+      expect(open).toEqual({ text: "No asks." });
+      expect(all).toEqual({ text: [
+        "A1 [done] question: Own ask",
+        "A7 [dropped] question: Relayed ask (not yours; owner: agent-2; workspace: wks_2)",
+      ].join("\n") });
+    });
+  });
+
   describe("cached PR snapshot when an update changes links", () => {
     const PR_A = "https://github.com/o/r/pull/1";
     const PR_B = "https://github.com/o/r/pull/2";

@@ -7,7 +7,7 @@ export const NUDGE =
 
 /** Sent when the human presses Refresh on an agent's asks. */
 export const REFRESH =
-  "[asks] The human wants your asks up to date. Run ask_list with scope mine. Create an ask for anything you are waiting on them for that has none, and ask_update or ask_resolve the ones that are out of date. Then reply in one line.";
+  "[asks] The human wants the asks in your pill up to date. Run ask_list with scope pill. For your own asks, create missing ones and use ask_update or ask_resolve for stale ones. For asks another agent owns, do not edit them: check whether each still looks current; if stale, message the owner by the agent id shown in ask_list to update it. Then reply in one line.";
 
 const ASK_TOOL = /(^|[_.])ask_(create|update|resolve|list)$/;
 const ASK_ID = /\bA\d+\b/;
