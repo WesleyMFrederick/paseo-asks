@@ -14,7 +14,7 @@ The inventory is `git log --reverse upstream/main..9061043`, including merge com
 
 | Local commit | Decision | Reason |
 |---|---|---|
-| `a0f94dc` refuse closed acts; report delivery | adapted | Preserve refusal of every action on a closed ask, delivery feedback and action logging with the upstream card interfaces; answers still wait for idle. |
+| `a0f94dc` refuse closed acts; report delivery | adapted | Preserve refusal of every action on a closed ask, delivery feedback and action logging with the upstream card interfaces; closed cards hide answer/reply controls and answers still wait for idle. |
 | `da2d6cd` full composer ask | dropped (covered by upstream [#69](https://github.com/fullstackhouse/paseo-asks/pull/69), [#71](https://github.com/fullstackhouse/paseo-asks/pull/71)) | Use upstream live chat cards and simplified full-content cards instead of the older composer-only rendering. |
 | `79445ad` drop/full-view results | kept | Retain the historical verification record. |
 | `2e6274d` named toast; wrapped code | adapted | Preserve action-specific delivery feedback; host Markdown replaces the plugin renderer and its wrapping patch. |
@@ -33,7 +33,7 @@ The inventory is `git log --reverse upstream/main..9061043`, including merge com
 | `95a6028` wide/phone sign-off | kept | Retain the historical user sign-off without treating it as fresh catch-up verification. |
 | `03dba06` recorded-card nudge suppression | adapted | Keep decision-id/title matching, scoped to relevant asks, alongside upstream [#68](https://github.com/fullstackhouse/paseo-asks/pull/68) workspace-aware ids and asynchronous classifier. |
 | `3c5338b` merge main into UI branch | kept | Preserve merge ancestry; its constituent behavior is classified separately. |
-| `4df7b7a` automatic run-state status | kept | Restore the owner's automatic running/idle flips: upstream [#76](https://github.com/fullstackhouse/paseo-asks/pull/76) is not observably equivalent and cannot replace the harness contract. |
+| `4df7b7a` automatic run-state status | kept | Restore automatic running/idle flips and count automatic holds as scheduled-run attention even before the turn-end flip: upstream [#76](https://github.com/fullstackhouse/paseo-asks/pull/76) cannot replace the harness contract. |
 | `61604b2` merge automatic status | kept | Preserve ancestry and the automatic-status behavior the harness relies on. |
 | `2c8c92f` auto-status live results | kept | Preserve the historical evidence for the retained automatic-status behavior. |
 | `7ea8f59` invalidate cached PR on relink | kept | Preserve immediate store invalidation; upstream [#53](https://github.com/fullstackhouse/paseo-asks/pull/53) separately fixes watcher comparisons, so the defenses complement each other. |
@@ -100,6 +100,19 @@ Review-correction verification:
 - `bunx vite build` in `preview` exited 0: `✓ 2065 modules transformed.` and `✓ built in 643ms`. Its 900.94 kB JavaScript chunk still produces the non-fatal 500 kB size warning.
 - The first correction suite exposed six obsolete lifecycle expectations: one expected steering during a running turn, and five assumed newly created asks were already idle/open. The steering test now asserts zero sends until idle, then one delivery; discussion/message fixtures run the real turn-end handler before testing idle behavior. The explainer's new ask is asserted automatically in progress. No refusal, authorization, parser or waiting-count assertion was removed.
 - Final full suite through the same machine-wide queue exited 0: `Test Files  21 passed (21)`, `Tests  289 passed (289)`, `Duration  5.58s`.
+
+### Re-review corrections
+
+Re-review confirmed the earlier fixes but found two adjacent integration gaps:
+
+- Scheduled-run attention previously checked only open status, so it could miss a new automatically in-progress ask before a delayed or missed turn-end event and let the host archive the workspace. `attentionForOpenAsks` now also counts automatic holds, without counting explicit holds, closed asks or other owners. `test/schedule-attention.test.ts` creates an ask through the real service and asserts identical attention before and after the real turn-end handler; mixed-status coverage checks counting and exclusions.
+- Closed chat cards still offered controls the server correctly refuses. The shared `canAnswer` predicate now gates reply fields and answer buttons, while closed-card navigation remains available and the server guard is unchanged. `test/run-status.test.ts` asserts reply eligibility for every status and no visible actions for done/dropped cards, including persisted automatic flags.
+
+Re-review verification:
+
+- `bun run typecheck` exited 0.
+- `bunx vite build` in `preview` exited 0: `✓ 2065 modules transformed.` and `✓ built in 469ms`. The 900.97 kB JavaScript chunk produces the existing non-fatal size warning.
+- Full suite through the machine-wide queue exited 0: `Test Files  21 passed (21)`, `Tests  295 passed (295)`, `Duration  2.19s`.
 
 ## Activate or roll back
 

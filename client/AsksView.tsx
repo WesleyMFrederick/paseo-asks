@@ -10,6 +10,7 @@ import { MoreMenu, type MenuEntry } from "./menu";
 import type { OpenAgent } from "./navigation";
 import {
   actOnAsk,
+  canAnswer,
   discussAsk,
   discussionTitle,
   firstExpanded,
@@ -669,7 +670,7 @@ function AskDetail({
     if (!busy && note.trim()) mutation.mutate({ verb: "reply" });
   };
 
-  const closed = ask.status === "done" || ask.status === "dropped";
+  const closed = !canAnswer(ask);
   const menuItems: MenuEntry[] = [
     ...(closed
       ? []
@@ -763,7 +764,7 @@ function AskDetail({
           {menu}
         </View>
       )}
-      <View style={styles.replyRow}>
+      {!closed && <View style={styles.replyRow}>
         <View style={styles.replyField}>
           <TextInput
             value={note}
@@ -798,7 +799,8 @@ function AskDetail({
           ) : null}
         </View>
         {actions.length === 0 && menu}
-      </View>
+      </View>}
+      {closed && menu}
     </View>
   );
 }

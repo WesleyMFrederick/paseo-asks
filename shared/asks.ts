@@ -94,8 +94,14 @@ export type Ask = z.infer<typeof AskSchema>;
 
 export const OPEN_STATUSES: readonly Ask["status"][] = ["open", "in_progress"];
 
+/** Closed cards are read-only: no reply field or answer buttons. */
+export function canAnswer(ask: Pick<Ask, "status">): boolean {
+  return OPEN_STATUSES.includes(ask.status);
+}
+
 /** Actions available in an expanded ask card. */
 export function visibleActions(ask: Pick<Ask, "status" | "autoStatus" | "actions">): Action[] {
+  if (!canAnswer(ask)) return [];
   return ask.actions.filter((action) => ask.status === "open" || (ask.status === "in_progress" && ask.autoStatus === true) || action.kind !== "send");
 }
 

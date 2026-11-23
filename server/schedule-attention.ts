@@ -8,10 +8,11 @@ export interface ScheduleRunAttention {
 /**
  * What a scheduled run that left asks waiting on you should report: the count and the newest title.
  * Null when nothing waits, so the daemon archives the run as usual.
+ * Automatic in-progress asks still need the human: the turn-end flip may not have run yet.
  */
 export function attentionForOpenAsks(asks: readonly Ask[], agentId: string): ScheduleRunAttention | null {
   const waiting = asks
-    .filter((ask) => ask.ownerAgentId === agentId && awaitsYou(ask))
+    .filter((ask) => ask.ownerAgentId === agentId && (awaitsYou(ask) || (ask.status === "in_progress" && ask.autoStatus === true)))
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   const newest = waiting[0];
   if (!newest) return null;

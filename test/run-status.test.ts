@@ -2,7 +2,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
-import { AskSchema, visibleActions, type Action, type Ask } from "../shared/asks";
+import { AskSchema, canAnswer, visibleActions, type Action, type Ask } from "../shared/asks";
 import { Outbox, type AgentState, type Courier } from "../server/outbox";
 import { RunStatus, type FlipLogEntry, type OwnerState } from "../server/run-status";
 import { AsksService } from "../server/service";
@@ -198,10 +198,19 @@ describe("automatic status keeps the card answerable", () => {
     ["in_progress", true, ["send", "resolve", "open"]],
     ["in_progress", false, ["resolve", "open"]],
     ["in_progress", undefined, ["resolve", "open"]],
-    ["done", true, ["resolve", "open"]],
-    ["dropped", true, ["resolve", "open"]],
+    ["done", true, []],
+    ["dropped", true, []],
   ] as const)("filters buttons for %s with autoStatus %s", (status, autoStatus, expected) => {
     expect(visibleActions({ status, autoStatus, actions }).map(({ id }) => id)).toEqual(expected);
+  });
+
+  it.each([
+    ["open", true],
+    ["in_progress", true],
+    ["done", false],
+    ["dropped", false],
+  ] as const)("shows reply controls only when %s can accept an answer", (status, expected) => {
+    expect(canAnswer({ status })).toBe(expected);
   });
 
   it("preserves automatic markers through the RPC ask schema and accepts older asks", () => {
