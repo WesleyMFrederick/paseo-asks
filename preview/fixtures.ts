@@ -4,7 +4,11 @@ export const workspaces: Record<string, string> = {
   api: "acme/shop-api · checkout rework",
   infra: "acme/infra · staging cluster",
   web: "acme/shop-web · storefront",
+  empty: "acme/empty · no asks yet",
 };
+
+// This agent owns no asks and receives no relays, so its pill only offers Refresh.
+export const emptyPill = { workspaceId: "empty", agentId: "empty-agent" };
 
 const ago = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
 const base = { links: [], actions: [], createdAt: ago(300) };

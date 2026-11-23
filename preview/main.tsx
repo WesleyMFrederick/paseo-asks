@@ -5,7 +5,7 @@ import { Text, View } from "react-native";
 import { AgentAsks, AskCard, AsksView } from "../client/AsksView";
 import { OpenPrContext } from "../client/inbox";
 import { pillLabel } from "../shared/asks";
-import { asks } from "./fixtures";
+import { asks, emptyPill } from "./fixtures";
 import { callKey } from "../shared/timeline";
 
 const theme = {
@@ -91,6 +91,11 @@ createRoot(document.getElementById("root")!).render(
     <WidePill />
     <Frame id="phone-pill" title="Asks (phone pill sheet)" width={390} height={520}>
       <AgentAsks theme={theme} compact workspaceId="api" agentId="main" />
+    </Frame>
+    <Frame id="empty-pill" title={`Empty pill "${pillLabel(asks, emptyPill.agentId)}" · zero asks`} width={390} height={240}>
+      <View style={{ padding: 16 }}>
+        <AgentAsks theme={theme} compact workspaceId={emptyPill.workspaceId} agentId={emptyPill.agentId} />
+      </View>
     </Frame>
     {/* A chief-of-staff chat that owns no asks: its pill lists asks relayed from other workspaces, newest relay open first. */}
     <Frame id="cos-phone-pill" title={`CoS pill "${pillLabel(asks, "cos")}" (phone sheet)`} width={390} height={640}>
