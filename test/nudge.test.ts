@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { AgentTimelineItem } from "@getpaseo/protocol/agent-types";
 import { describe, expect, it } from "vitest";
 import type { Ask } from "../shared/asks";
-import { CLASSIFIER_PROMPT, endsWithQuestion, NUDGE, parseAnswer, REFRESH, shouldNudge } from "../server/nudge";
+import { endsWithQuestion, NUDGE, REFRESH, shouldNudge } from "../server/nudge";
 import { Outbox, type AgentState, type Courier } from "../server/outbox";
 import { AsksService } from "../server/service";
 import { pickCaller } from "../server/agents";
@@ -23,7 +23,7 @@ const tool = (name: string) =>
   }) as unknown as AgentTimelineItem;
 
 describe("ask prompts", () => {
-  it.each([NUDGE, REFRESH, CLASSIFIER_PROMPT])("keeps deferred work in the work queue rather than manufacturing a human ask", (prompt) => {
+  it.each([NUDGE, REFRESH])("keeps deferred work in the work queue rather than manufacturing a human ask", (prompt) => {
     expect(prompt).toMatch(/human.*(?:answer|act|do)/i);
     expect(prompt).toMatch(/deferred or out-of-scope work.*work queue, not asks/i);
     expect(prompt).not.toContain("follow-up you recommended or deferred");
@@ -31,7 +31,6 @@ describe("ask prompts", () => {
 });
 
 describe("shouldNudge", () => {
-  const yes = async () => true;
   const none = () => false;
   const openA3 = (id: string) => id === "A3";
 
@@ -47,13 +46,13 @@ describe("shouldNudge", () => {
 
   it("does not nudge when the turn used an asks tool", async () => {
     expect(
-      await shouldNudge([user("go"), tool("mcp__asks__ask_create"), reply("Which one?")], none, yes),
+      await shouldNudge([user("go"), tool("mcp__asks__ask_create"), reply("Which one?")], none),
     ).toBe(false);
   });
 
   it("does not nudge when the reply points to an existing ask", async () => {
     expect(
-      await shouldNudge([user("go"), reply("Still waiting on you, see A3. Which one?")], openA3, yes),
+      await shouldNudge([user("go"), reply("Still waiting on you, see A3. Which one?")], openA3),
     ).toBe(false);
   });
 
@@ -62,7 +61,6 @@ describe("shouldNudge", () => {
       await shouldNudge(
         [user("go"), reply("If A30 is truly unused, A29 is worth questioning too. Reply send it?")],
         openA3,
-        yes,
       ),
     ).toBe(true);
   });
@@ -87,45 +85,18 @@ describe("shouldNudge", () => {
   });
 
   it("never nudges the answer to a nudge", async () => {
-    expect(await shouldNudge([user(NUDGE), reply("Which one?")], none, yes)).toBe(false);
+    expect(await shouldNudge([user(NUDGE), reply("Which one?")], none)).toBe(false);
   });
 
   it("joins streamed reply chunks", async () => {
     expect(await shouldNudge([user("go"), reply("Which "), reply("one?")], none)).toBe(true);
-    let seen = "";
-    await shouldNudge([user("go"), reply("Which "), reply("one?")], none,
-      async (text) => ((seen = text), true),
-    );
-    expect(seen).toBe("Which one?");
   });
 
-  it("lets the classifier catch requests without a question mark", async () => {
-    const turn = [user("go"), reply("Decide on the migration, then re-review.")];
-    expect(await shouldNudge(turn, none)).toBe(false);
-    expect(await shouldNudge(turn, none, yes)).toBe(true);
-    expect(await shouldNudge([user("go"), reply("Which one?")], none, async () => false)).toBe(false);
-  });
-
-  it("falls back to the question mark check when the classifier fails", async () => {
-    const fail = async () => Promise.reject(new Error("provider down"));
-    expect(await shouldNudge([user("go"), reply("Which one?")], none, fail)).toBe(true);
-    expect(await shouldNudge([user("go"), reply("Done.")], none, fail)).toBe(false);
+  it("keeps the old question-mark heuristic without creating classifier agents", async () => {
+    expect(await shouldNudge([user("go"), reply("Decide on the migration, then re-review.")], none)).toBe(false);
+    expect(await shouldNudge([user("go"), reply("Which one?")], none)).toBe(true);
   });
 });
-
-describe("parseAnswer", () => {
-  it("reads the answer from bare, fenced or chatty output", () => {
-    expect(parseAnswer('{"waitsOnHuman": true}')).toBe(true);
-    expect(parseAnswer('```json\n{"waitsOnHuman":false}\n```\n\nThe reply only reports.')).toBe(
-      false,
-    );
-    expect(parseAnswer("**waitsOnHuman: true**\n\nThe reply asks the human to choose.")).toBe(true);
-    // Haiku on Claude ignores outputSchema and answers in prose (seen live).
-    expect(parseAnswer("Set `waitsOnHuman` to **true**. The reply ends with a question to the human.")).toBe(true);
-    expect(parseAnswer("waitsOnHuman should be false: it only reports.")).toBe(false);
-    expect(parseAnswer("waitsOnHuman is unclear; true and false both fit.")).toBe(null);
-    expect(parseAnswer("I think yes.")).toBe(null);
-  });
 
   describe("re-shown card an open ask already records", () => {
     const ask = (over: Partial<Ask>): Ask => ({
@@ -139,33 +110,32 @@ describe("parseAnswer", () => {
       // Given an open decision ask whose body names the card file
       const open = ask({ title: "Unrelated heading", body: "card: decision-toolu_01AbC.md" });
       // When the reply re-shows that card, Then no nudge
-      expect(await shouldNudge(idCard, () => false, undefined, [open])).toBe(false);
+      expect(await shouldNudge(idCard, () => false, [open])).toBe(false);
     });
 
     it("does not nudge when the reply carries an open ask's title", async () => {
       // Given an open ask titled like the card
       const open = ask({ title: "  pick the NUDGE   fix " });
       // When the reply re-shows the card, Then no nudge
-      expect(await shouldNudge(card, () => false, undefined, [open])).toBe(false);
+      expect(await shouldNudge(card, () => false, [open])).toBe(false);
     });
 
     it("nudges when the matching ask is done or dropped", async () => {
       // Given closed asks that match by id and by title
       const closed = [ask({ status: "done", body: "decision-toolu_01AbC" }), ask({ status: "dropped" })];
       // When either card is re-shown, Then the nudge still fires
-      expect(await shouldNudge(idCard, () => false, undefined, closed)).toBe(true);
-      expect(await shouldNudge(card, () => false, undefined, closed)).toBe(true);
+      expect(await shouldNudge(idCard, () => false, closed)).toBe(true);
+      expect(await shouldNudge(card, () => false, closed)).toBe(true);
     });
 
     it("nudges a question when the only open ask is unrelated", async () => {
       // Given an open ask about something else
       const other = ask({ title: "Review the billing PR", body: "decision-toolu_other" });
       // When the reply asks a different question, Then the nudge fires
-      expect(await shouldNudge(idCard, () => false, undefined, [other])).toBe(true);
-      expect(await shouldNudge(card, () => false, undefined, [other])).toBe(true);
+      expect(await shouldNudge(idCard, () => false, [other])).toBe(true);
+      expect(await shouldNudge(card, () => false, [other])).toBe(true);
     });
   });
-});
 
 describe("endsWithQuestion", () => {
   it("ignores question marks in code and links", () => {

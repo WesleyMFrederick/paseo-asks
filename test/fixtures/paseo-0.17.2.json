@@ -1,0 +1,34 @@
+{
+  "version": "0.17.2",
+  "sourceArchive": "/Applications/Paseo.app/Contents/Resources/app.asar",
+  "sources": {
+    "modules": ["node_modules/@getpaseo/plugin/dist/index.js", "node_modules/@getpaseo/plugin/dist/server/index.js"],
+    "hooks": "node_modules/@getpaseo/plugin/dist/server/lifecycle.js",
+    "api": "node_modules/@getpaseo/client/dist/index.js",
+    "legacyTimeline": "node_modules/@getpaseo/server/dist/server/server/plugins/runtime.js:1329-1332",
+    "internalCreation": "node_modules/@getpaseo/protocol/dist/messages.js:355-369,1546-1577"
+  },
+  "modules": {
+    "@getpaseo/plugin": ["defineSettings", "settingsRpc", "defineAttachmentSource", "PluginAttachmentItemSchema", "PluginAttachmentSearchPayloadSchema", "defineRpc", "defineSubscription", "findSvgIconProblem", "PLUGIN_SVG_ICON_MAX_BYTES"],
+    "@getpaseo/plugin/server": ["spawnProcess", "execCommand", "terminateProcess", "defineAgentTool"]
+  },
+  "hooks": ["workspace.create.before", "workspace.create.after", "workspace.archive.after", "worktree.create.before", "worktree.create.after", "agent.create.before", "agent.create.after", "agent.open.before", "agent.close.after", "agent.archive.after", "agent.turn.before", "agent.turn.after", "agent.permission.before", "agent.permission.after"],
+  "legacyEvents": {
+    "workspace.created": "workspace.create.after",
+    "workspace.archived": "workspace.archive.after",
+    "agent.created": "agent.create.after",
+    "agent.closed": "agent.close.after",
+    "agent.archived": "agent.archive.after",
+    "agent.turn_started": "agent.turn.before",
+    "agent.turn_ended": "agent.turn.after",
+    "agent.permission_requested": "agent.permission.before",
+    "agent.permission_resolved": "agent.permission.after"
+  },
+  "legacyRequests": {
+    "workspace.create": "workspace.create.before",
+    "agent.create": "agent.create.before",
+    "agent.session_open": "agent.open.before"
+  },
+  "apiKeys": ["dispose", "hosts", "observeEvents", "terminals", "projects", "workspaces", "agents", "providers", "config"],
+  "internalAgentCreation": false
+}

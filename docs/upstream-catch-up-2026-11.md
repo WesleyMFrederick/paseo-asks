@@ -115,14 +115,44 @@ Re-review verification:
 - Full suite through the machine-wide queue exited 0: `Test Files  21 passed (21)`, `Tests  295 passed (295)`, `Duration  2.19s`.
 - Navigation correction: `bun run typecheck` exited 0, and the full queued suite exited 0: `Test Files  21 passed (21)`, `Tests  299 passed (299)`, `Duration  1.43s`.
 
+## Installed-host compatibility
+
+The first activation on November 23 loaded the bundle but failed in the turn-end hook: stock Paseo 0.17.2 does not export `latestTurn`. Installing the npm SDK cannot supply a host export: the daemon replaces SDK imports with its own runtime modules. The live checkout was immediately returned to `rollback/asks-before-upstream-2026-11` at `906104304a7645ce8f10cd3bc88c36c31381b48c`, its dependencies reinstalled, and the plugin reloaded. The same six ask IDs and statuses were observed before activation, after activation, and after rollback. No daemon restart was performed.
+
+Compatibility was checked against actual JavaScript in `/Applications/Paseo.app/Contents/Resources/app.asar` and the packaged renderer, not just SDK declarations:
+
+| Missing host capability | Disposition |
+|---|---|
+| Server SDK `latestTurn` | Feature-detect the host function. Otherwise use the pre-catch-up hook timeline; stock 0.17.2 deliberately sends an empty compatibility array, so fetch projected timeline pages until the latest user message. This restores both saved last replies and the nudge's original input. |
+| Lifecycle `schedule.run.finish.before` | Drop scheduled-run attention on hosts that reject this hook; no old-code equivalent exists. Existing guarded registration remains. |
+| Client API `notifications.send` | Mark the augmentation optional and feature-detect before sending. Drop this extra notification when unavailable; normal asks remain. |
+| Classifier `config.internal` | Drop the upstream hidden-helper classifier and its unsupported config cast. Stock 0.17.2 strips this config field, and its request schema explicitly says public internal creation is unsupported. Restore the old question-mark nudge heuristic; keep scoped ask/card suppression. |
+| Client UI `Menu` | Existing inline action-button fallback; no change needed. |
+| Client context `addWorkspaceSummaryItem` | Existing registration guard drops this extra overview surface; pills and panels remain. |
+| Navigation `openPluginScreen` / `hasPluginScreen` | Existing guard disables the optional Inbox integration. |
+| Timeline-position navigation | Existing fallback opens the agent without scrolling. |
+| Popover side-panel presentation and navigation | Existing supported wide panel and Asks-screen handoffs remain. |
+| Theme `attention` | Existing `statusWarning` fallback remains. |
+
+Every required client import is present in the actual injected renderer modules, including `useSettings`, `openExternalUrl` and UI/native components. The SDK package's empty UI entry is not the renderer module: the renderer injects its own implementation. Server SDK `execCommand` and shared `defineRpc`/`defineSettings` are also present. No other required runtime import is missing.
+
+`test/fixtures/paseo-0.17.2.json` records the installed server/shared export lists, lifecycle registry and capability provenance. `test/server-host-compat.test.ts` loads the real server entry with only those server exports, checks every named server/shared SDK import against the recorded runtime, rejects unsupported schedule registration, exercises turn-end hooks with both old populated and stock empty timelines, and verifies nudging never starts an internal classifier agent. Normal tests no longer depend on having the desktop app installed.
+
+Compatibility-fix verification:
+
+- `bun run typecheck` exited 0.
+- The full suite through the machine-wide queue exited 0: `Test Files 22 passed (22)`, `Tests 302 passed (302)`, `Duration 9.71s`.
+- No client source changed, so no additional preview build was needed. No lint script is configured in this plugin.
+
 ## Activate or roll back
 
-These commands are **[INFERENCE] — provided, not run**. They assume the live checkout is still clean and on main, as it was when work began. Nothing here updates fork main.
+The original activation and rollback above were run. The commands below are **[INFERENCE] — provided, not run for the compatibility fix**. They require a clean live checkout. The live checkout remains on the rollback branch; nothing here updates fork main.
 
 Activate by fast-forwarding the live main checkout, installing the updated SDK, and reloading only the plugin:
 
 ```bash
 LIVE="$HOME/.paseo/plugin-src/paseo-asks"
+git -C "$LIVE" switch main
 git -C "$LIVE" merge --ff-only chore/catch-up-upstream
 bun install --cwd "$LIVE" --no-save
 paseo plugin reload paseo-asks
@@ -139,4 +169,4 @@ paseo plugin reload paseo-asks
 
 The rollback leaves main pointing at the catch-up and makes the live checkout run the backup branch. To activate again, switch the clean live checkout back to main, install and reload as above. Neither direction rolls back user answers or replaces the plugin data folder.
 
-No live reload, daemon restart, browser exercise or separate `e2e` cassette replay was run for this catch-up; those behaviors are **[INFERENCE]**, not verified UI claims.
+The compatibility fix has not been loaded into the live plugin. No browser exercise or separate `e2e` cassette replay was run; those behaviors are **[INFERENCE]**, not verified UI claims.

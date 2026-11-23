@@ -1,17 +1,18 @@
 import { appendFileSync } from "node:fs";
 import { join } from "node:path";
 import type { PaseoApi } from "@getpaseo/client";
-import { latestTurn, type PluginServerContext } from "@getpaseo/plugin/server";
+import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { actOnAsk, CloseInputSchema, discussAsk, latestRelays, listAsks, locateAsk, OPEN_STATUSES, oldestFirst, ReassignInputSchema, refreshAsks, RelayInputSchema, showsIn } from "./shared/asks";
 import { AgentDirectory, pickCaller } from "./server/agents";
 import { installBridge } from "./server/bridge";
 import { Discussions } from "./server/discuss";
 import { Gh, ghExec } from "./server/gh";
 import { findGh, ghFetcher } from "./server/github";
+import { latestTurn } from "./server/host-sdk";
 import { LastOutputs } from "./server/last-output";
 import { listen } from "./server/listener";
 import { findAskCall } from "./server/locate";
-import { CLASSIFIER_PROMPT, NUDGE, paseoClassifier, shouldNudge } from "./server/nudge";
+import { NUDGE, shouldNudge } from "./server/nudge";
 import { isWorking, Outbox, type Courier } from "./server/outbox";
 import { checkFilePaths, diskPathEnv } from "./server/file-paths";
 import { dataDir } from "./server/paths";
@@ -126,13 +127,9 @@ export default function contribute(server: PluginServerContext) {
   const watcher = ghPath
     ? new PrWatcher(store, service, ghFetcher(new Gh(ghExec(ghPath))), actOnReviewChanges, liveWorkspaces)
     : null;
-  // Short-lived classifier agents the plugin starts itself; its hooks leave them alone.
-  const helpers = new Set<string>();
-  const classifierFor = paseoClassifier(requirePaseo, helpers);
 
   server.before("agent.create", ({ request }, { paseo: api }) => {
     capture(api);
-    if (request.config.systemPrompt === CLASSIFIER_PROMPT) return request;
     return {
       ...request,
       config: { ...request.config, mcpServers: { ...request.config.mcpServers, asks: mcp } },
@@ -140,24 +137,22 @@ export default function contribute(server: PluginServerContext) {
   });
   server.before("agent.session_open", ({ request }, { paseo: api }) => {
     capture(api);
-    if (request.workspaceId && !helpers.has(request.agentId))
+    if (request.workspaceId)
       agents.remember(request.agentId, request.workspaceId);
   });
   server.on("agent.created", ({ agent }, { paseo: api }) => {
     capture(api);
-    if (agent.workspaceId && !helpers.has(agent.id)) agents.remember(agent.id, agent.workspaceId);
+    if (agent.workspaceId) agents.remember(agent.id, agent.workspaceId);
   });
   server.on("agent.turn_started", async ({ agent }, { paseo: api }) => {
     capture(api);
-    if (helpers.has(agent.id)) return;
     await runStatus.turnStarted(agent.id).catch((error) => console.error("[asks] turn_started status flip failed", error));
   });
-  server.on("agent.turn_ended", async ({ agent, outcome }, { paseo: api }) => {
+  server.on("agent.turn_ended", async ({ agent, outcome, timeline: legacyTimeline }, { paseo: api }) => {
     capture(api);
-    if (helpers.has(agent.id)) return;
     await runStatus.turnEnded(agent.id).catch((error) => console.error("[asks] turn_ended status flip failed", error));
     void outbox.flush(agent.id);
-    const timeline = await latestTurn(api.agents.ref(agent.id).timeline);
+    const timeline = await latestTurn(api.agents.ref(agent.id).timeline, legacyTimeline);
     lastOutputs.record(agent.id, timeline);
     // Agents sometimes ask in chat and skip ask_create; one reminder per such turn. A read-only side chat (a
     // discussion in the ask's own workspace) talks to the human directly and could not carry out an ask of its own.
@@ -172,9 +167,9 @@ export default function contribute(server: PluginServerContext) {
     const openAsks = [...store.list(workspaceId), ...service.discussing(agent.id)]
       .filter((ask) => OPEN_STATUSES.includes(ask.status));
     const openIds = new Set(openAsks.map((ask) => ask.id));
-    void shouldNudge(timeline, (id) => openIds.has(id), classifierFor(agent.id), openAsks)
+    void shouldNudge(timeline, (id) => openIds.has(id), openAsks)
       .then(async (nudge) => {
-        // The classifier takes a few seconds. Leave the agent alone if a new turn has started.
+        // The turn may have restarted while its history was being fetched.
         if (!nudge) return;
         const state = await courier.state(agent.id);
         if (isWorking(state) || state === "gone") return;
@@ -187,14 +182,6 @@ export default function contribute(server: PluginServerContext) {
   // tools only touch asks, so answer those prompts here instead of interrupting the human.
   server.on("agent.permission_requested", async ({ agent, request }, { paseo: api }) => {
     capture(api);
-    // A classifier only needs to answer; never let it put a prompt in front of the human.
-    if (helpers.has(agent.id)) {
-      await api.agents.ref(agent.id).respondToPermission({
-        requestId: request.id,
-        response: { behavior: "deny", message: "Answer without tools." },
-      });
-      return;
-    }
     if (!isAsksPermission(request)) return;
     await api.agents
       .ref(agent.id)
@@ -209,7 +196,7 @@ export default function contribute(server: PluginServerContext) {
       if (!attention || request.attention) return;
       const name = request.schedule.name ?? "Scheduled run";
       void api.notifications
-        .send({
+        ?.send({
           title: `${name} needs you`,
           body: attention.message ?? "",
           open: { agentId: request.agent.id },
