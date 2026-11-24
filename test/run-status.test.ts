@@ -1,7 +1,7 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Outbox, type Courier } from "../server/outbox";
 import { RunStatus, type FlipLogEntry, type OwnerState } from "../server/run-status";
 import { AsksService } from "../server/service";
@@ -58,6 +58,46 @@ describe("status follows the owner", () => {
     expect(statusOf(auto.id)).toMatchObject({ status: "open", autoStatus: false });
     expect(statusOf(sent.id).status).toBe("in_progress");
     expect(flips).toMatchObject([{ cause: "turn_ended", askId: auto.id, from: "in_progress", to: "open" }]);
+  });
+
+  it("Given turn end and the next turn start fire concurrently, when both settle, then the owner's ask is in_progress", async () => {
+    // Given
+    const ask = await raise(OWNER);
+    await runStatus.turnStarted(OWNER);
+    flips.length = 0;
+    const flipStatus = store.flipStatus.bind(store);
+    vi.spyOn(store, "flipStatus").mockImplementation(async (...args) => {
+      await Promise.resolve();
+      return flipStatus(...args);
+    });
+
+    // When
+    const a = runStatus.turnEnded(OWNER);
+    const b = runStatus.turnStarted(OWNER);
+    await Promise.all([a, b]);
+
+    // Then
+    expect(statusOf(ask.id)).toMatchObject({ status: "in_progress", autoStatus: true });
+    expect(flips).toMatchObject([
+      { cause: "turn_ended", askId: ask.id, from: "in_progress", to: "open" },
+      { cause: "turn_started", askId: ask.id, from: "open", to: "in_progress" },
+    ]);
+  });
+
+  it("Given an owner event rejects, when the next event runs, then it still updates the ask", async () => {
+    // Given
+    const ask = await raise(OWNER);
+    vi.spyOn(store, "flipStatus").mockRejectedValueOnce(new Error("write failed"));
+
+    // When
+    const failed = runStatus.turnStarted(OWNER);
+    const next = runStatus.turnStarted(OWNER);
+    await expect(failed).rejects.toThrow("write failed");
+    await next;
+
+    // Then
+    expect(statusOf(ask.id)).toMatchObject({ status: "in_progress", autoStatus: true });
+    expect(flips).toMatchObject([{ cause: "turn_started", askId: ask.id, from: "open", to: "in_progress" }]);
   });
 
   it("never touches done or dropped asks", async () => {
@@ -124,6 +164,30 @@ describe("status follows the owner", () => {
     expect(flips).toMatchObject([
       { cause: "reconcile", askId: stale.id, from: "in_progress", to: "open" },
       { cause: "reconcile", askId: missed.id, from: "open", to: "in_progress" },
+    ]);
+  });
+
+  it("Given a reconcile and a turn start for the same owner overlap, when both settle, then the ask is in_progress", async () => {
+    // Given
+    const ask = await raise(OWNER);
+    await runStatus.turnStarted(OWNER);
+    flips.length = 0;
+    const flipStatus = store.flipStatus.bind(store);
+    vi.spyOn(store, "flipStatus").mockImplementation(async (...args) => {
+      await Promise.resolve();
+      return flipStatus(...args);
+    });
+
+    // When
+    const a = runStatus.reconcile(async () => "idle");
+    const b = runStatus.turnStarted(OWNER);
+    await Promise.all([a, b]);
+
+    // Then
+    expect(statusOf(ask.id)).toMatchObject({ status: "in_progress", autoStatus: true });
+    expect(flips).toMatchObject([
+      { cause: "reconcile", askId: ask.id, from: "in_progress", to: "open" },
+      { cause: "turn_started", askId: ask.id, from: "open", to: "in_progress" },
     ]);
   });
 });
